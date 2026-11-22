@@ -1,0 +1,1807 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { 
+  Upload, X, Sparkles, Building, Hash, Home, Image as ImageIcon, 
+  AlertCircle, BedDouble, Bath, Maximize2, FileText, Check, CheckCircle2,
+  ShieldCheck, Eye, Sun, Moon, Sunrise, Waves, Sliders, Wand2, Brush, Star,
+  FileBadge2, UserCheck, FileCheck, RefreshCw, Layers, Loader2
+} from 'lucide-react';
+import axios from 'axios';
+import Toast from './Toast';
+import { sbFetch, uploadListingImage, uploadEnhancedListingImage, uploadListingDocument } from '../utils/supabaseClient';
+import { enhanceRealEstatePhoto } from '../utils/photoEnhancerClient';
+import { enhanceListingBatch } from '../utils/aiEnhanceService';
+import { extractDocumentText, parseTitleDeedClient, parseEmiratesIdClient, parseDocumentsWithBrowserAI } from '../utils/documentExtractor';
+import { extractTransparentSignature } from '../utils/signatureExtractor';
+
+const DEFAULT_SEQUENCE = [
+  'Living_Room',
+  'Balcony_Skyline_View',
+  'Master_Bedroom',
+  'Modern_Kitchen',
+  'Luxury_Bathroom',
+  'Dining_Area',
+  'Bedroom',
+  'Infinity_Pool',
+  'Terrace_Lounge',
+  'Walk_in_Closet',
+  'Foyer_Entrance',
+  'Building_Exterior',
+];
+
+const ASQUARED_DEFAULT_PROMPT = `You are a real-estate property photo QA and enhancement assistant.
+
+Review the attached property photo for portal advertising.
+
+FOREIGN WATERMARK & BRANDING REMOVAL DIRECTIVE (MANDATORY):
+- If the image contains any competitor watermarks, third-party agency logos, portal watermarks (e.g., Property Finder, Bayut, Dubizzle, Houza, etc.), broker phone numbers, timestamps, agency banners, or overlaid text:
+  YOU MUST COMPLETELY AND SEAMLESSLY DETECT AND ERASE THEM.
+- Reconstruct and inpaint the underlying surface (wall, glass, tile, ceiling, sky, balcony railing, floor, cabinetry, or view) with clean, authentic architectural textures that naturally match the surrounding area.
+- Do NOT generate or add any artificial text, numbers, company logos, or badges in the edited photo — only clean, natural photographic surfaces.
+
+First assess:
+- brightness
+- sharpness
+- natural appearance
+- vertical lines and perspective
+- composition
+- visible people
+- competitor watermarks and logos (to be erased)
+- reflections
+- clutter
+- CGI or AI-generated appearance
+- bathroom placement
+- floor-plan status
+- whether the photo clearly represents the property
+
+Do not change the property or invent furniture, features, amenities or views.
+
+Determine whether the image should be:
+- used as-is
+- edited
+- reordered
+- rejected
+- sent for human review
+
+If editing is required, edit the real-estate photo conservatively so it still looks like a natural professional photograph.
+
+Improve only:
+- exposure
+- brightness
+- white balance
+- clarity
+- straightness
+- minor photographic imperfections
+- complete removal of any foreign watermarks, stamps, or broker phone numbers
+
+Preserve exactly:
+- actual room layout
+- finishes
+- furniture
+- fixtures
+- architectural features
+- windows
+- doors
+- view
+- property condition
+
+Do not:
+- leave any third-party or competitor watermarks, stamps, or phone numbers visible
+- add furniture
+- remove furniture
+- add amenities
+- remove amenities
+- alter the room layout
+- add or remove structural features
+- change the view
+- fabricate property features
+- make the image look CGI
+- make the image look AI-generated
+- over-saturate
+- over-sharpen
+- distort proportions
+
+If the image contains a floor plan, do not treat it as a normal room photograph. Identify it as a floor plan and evaluate whether it should be included and where it should appear in the photo sequence.
+
+If the image contains people, severe clutter, misleading reflections, obvious CGI, or structural defects that cannot be safely corrected through conservative editing, flag the issue.
+
+ORIENTATION & ASPECT RATIO MANDATE (STRICT):
+- STRICTLY PRESERVE the authentic photo's original aspect ratio, camera framing, and orientation (landscape, square, or portrait).
+- NEVER outpaint, pad, widen, or invent new walls, floors, or ceilings to change a portrait photo into landscape or vice versa.
+- Keep the exact same camera angle, field of view, and optical perspective.
+Natural professional property-advertising style.`;
+
+const PRESETS = [
+  {
+    id: 'asquared_default',
+    label: '⭐ Asquared Standard (QA & Quality Checked)',
+    icon: Star,
+    isPrimary: true,
+    instruction: ASQUARED_DEFAULT_PROMPT
+  },
+  {
+    id: 'retouch_overall',
+    label: 'Overall Luxury Retouch',
+    icon: Wand2,
+    instruction: 'Professionally enhance lighting, contrast, and high-end color grading for a luxury Dubai architectural magazine finish without modifying structure.'
+  },
+  {
+    id: 'clarity',
+    label: 'Clarity & Sharpness',
+    icon: Eye,
+    instruction: 'Increase micro-contrast, crisp texture sharpness, and optical clarity throughout the image.'
+  },
+  {
+    id: 'declutter',
+    label: 'Clean & Declutter',
+    icon: Brush,
+    instruction: 'Subtly declutter and clean visible floor cables and debris while keeping genuine furniture intact.'
+  },
+  {
+    id: 'brighten',
+    label: 'Brighten Dim Interiors',
+    icon: Sun,
+    instruction: 'Brighten underexposed interior ceilings and lift dark shadow corners naturally.'
+  },
+  {
+    id: 'glare',
+    label: 'Balance Glare & Windows',
+    icon: Moon,
+    instruction: 'Balance extreme outdoor window glare so Dubai skyline views remain clear and visible.'
+  },
+  {
+    id: 'golden_hour',
+    label: 'Dubai Golden Hour',
+    icon: Sunrise,
+    instruction: 'Add warm, ambient golden-hour luxury warmth to window lighting and interior fixtures.'
+  },
+  {
+    id: 'vivid_sky',
+    label: 'Vivid Sky & Water',
+    icon: Waves,
+    instruction: 'Enrich natural sky blue tones and make balcony ocean or pool water look crystal clear.'
+  }
+];
+
+// Helper to auto-format numbers with commas
+const formatNumberWithCommas = (val) => {
+  if (!val && val !== 0) return '';
+  const clean = val.toString().replace(/[^0-9.]/g, '');
+  const parts = clean.split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return parts.slice(0, 2).join('.');
+};
+
+export default function NewListing({ onListingCreated, onBack }) {
+  const [name, setName] = useState('');
+  const [reference, setReference] = useState('');
+  const [purpose, setPurpose] = useState('For Sale');
+  const [price, setPrice] = useState('');
+  const [propertyType, setPropertyType] = useState('Apartment');
+  const [bedrooms, setBedrooms] = useState('2 Bedrooms');
+  const [bathrooms, setBathrooms] = useState('2 Baths');
+  const [sizeSqft, setSizeSqft] = useState('');
+  const [roughNotes, setRoughNotes] = useState('');
+
+  // Rental Contract & NOC Form Specifics
+  const [cheques, setCheques] = useState('4 Cheques');
+  const [occupancyStatus, setOccupancyStatus] = useState('Vacant');
+  const [furnishing, setFurnishing] = useState('Unfurnished');
+  const [ownerPhone, setOwnerPhone] = useState('');
+  const [ownerEmail, setOwnerEmail] = useState('');
+  const [agreementDuration, setAgreementDuration] = useState('3 Month');
+  const [agreementUntilDate, setAgreementUntilDate] = useState('');
+  const [agreementType, setAgreementType] = useState('Non-Exclusive');
+  const [securityDeposit, setSecurityDeposit] = useState('5%');
+
+  const [selectedPresets, setSelectedPresets] = useState(['asquared_default']);
+  const [compiledPrompt, setCompiledPrompt] = useState(ASQUARED_DEFAULT_PROMPT);
+  const [modelTier, setModelTier] = useState('flare'); // 'flare' (fast) or 'sunburst' (luxury)
+  const [isPromptExpanded, setIsPromptExpanded] = useState(false);
+  
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [previews, setPreviews] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, text: '' });
+  const [error, setError] = useState(null);
+  const [toast, setToast] = useState({ msg: '', type: 'success' });
+  const [isDragging, setIsDragging] = useState(false);
+  const [draftRecovered, setDraftRecovered] = useState(false);
+
+  // Restore draft on mount if fields are empty
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('asquared_new_listing_draft');
+      if (saved) {
+        const draft = JSON.parse(saved);
+        if (draft && draft.name && !name) {
+          setName(draft.name || '');
+          if (draft.reference) setReference(draft.reference);
+          if (draft.purpose) setPurpose(draft.purpose);
+          if (draft.price) setPrice(draft.price);
+          if (draft.propertyType) setPropertyType(draft.propertyType);
+          if (draft.bedrooms) setBedrooms(draft.bedrooms);
+          if (draft.bathrooms) setBathrooms(draft.bathrooms);
+          if (draft.sizeSqft) setSizeSqft(draft.sizeSqft);
+          if (draft.roughNotes) setRoughNotes(draft.roughNotes);
+          if (draft.cheques) setCheques(draft.cheques);
+          if (draft.occupancyStatus) setOccupancyStatus(draft.occupancyStatus);
+          if (draft.furnishing) setFurnishing(draft.furnishing);
+          if (draft.ownerPhone) setOwnerPhone(draft.ownerPhone);
+          if (draft.ownerEmail) setOwnerEmail(draft.ownerEmail);
+          setDraftRecovered(true);
+        }
+      }
+    } catch (e) {}
+  }, []);
+
+  // Debounced draft auto-save
+  useEffect(() => {
+    if (name || price || sizeSqft || roughNotes) {
+      try {
+        const draft = {
+          name, reference, purpose, price, propertyType,
+          bedrooms, bathrooms, sizeSqft, roughNotes,
+          cheques, occupancyStatus, furnishing, ownerPhone, ownerEmail,
+          updatedAt: Date.now()
+        };
+        localStorage.setItem('asquared_new_listing_draft', JSON.stringify(draft));
+      } catch (e) {}
+    }
+  }, [name, reference, purpose, price, propertyType, bedrooms, bathrooms, sizeSqft, roughNotes, cheques, occupancyStatus, furnishing, ownerPhone, ownerEmail]);
+
+  const [titleDeedFile, setTitleDeedFile] = useState(null);
+  const [emiratesIdFiles, setEmiratesIdFiles] = useState([]);
+  const [isParsingDocs, setIsParsingDocs] = useState(false);
+  const [parsedDeedData, setParsedDeedData] = useState(null);
+  const [parsedEidData, setParsedEidData] = useState(null);
+  const [kycResult, setKycResult] = useState(null);
+
+  const fileInputRef = useRef(null);
+  const deedInputRef = useRef(null);
+  const eidInputRef = useRef(null);
+
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
+  };
+
+  const applyExtractedData = (titleDeedData, emiratesIdData, kyc) => {
+    if (titleDeedData && !titleDeedData.parse_error) {
+      setParsedDeedData(titleDeedData);
+      const bName = titleDeedData.building_name || 'Luxury Property';
+      const uNum = titleDeedData.unit_number ? `Unit ${titleDeedData.unit_number}` : '';
+      const comm = titleDeedData.community || 'Dubai';
+      setName(`${bName} ${uNum} — ${comm}`.trim());
+
+      const slug = (titleDeedData.building_name || 'DXB').replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase();
+      setReference(`ASQ-${slug}-${titleDeedData.unit_number || Date.now().toString().slice(-4)}`);
+
+      if (titleDeedData.property_type) {
+        setPropertyType(titleDeedData.property_type);
+      }
+      if (titleDeedData.bedrooms) {
+        setBedrooms(titleDeedData.bedrooms);
+      }
+      if (titleDeedData.bathrooms) {
+        setBathrooms(titleDeedData.bathrooms);
+      }
+      if (titleDeedData.total_area_sqft || titleDeedData.suite_area_sqft) {
+        setSizeSqft(formatNumberWithCommas(String(titleDeedData.total_area_sqft || titleDeedData.suite_area_sqft)));
+      }
+      if (titleDeedData.price) {
+        const cleanNum = String(titleDeedData.price).replace(/[^0-9.]/g, '');
+        if (cleanNum) setPrice(formatNumberWithCommas(cleanNum));
+      }
+      if (titleDeedData.cheques) {
+        setCheques(titleDeedData.cheques);
+      }
+      if (titleDeedData.occupancy_status) {
+        setOccupancyStatus(titleDeedData.occupancy_status);
+      }
+
+      const highlights = [
+        `Building: ${titleDeedData.building_name || 'N/A'}`,
+        `Unit: ${titleDeedData.unit_number || 'N/A'}`,
+        `Community: ${titleDeedData.community || 'Dubai'}`,
+        `Plot #: ${titleDeedData.plot_number || 'N/A'}`,
+        `DLD Deed #: ${titleDeedData.certificate_number || 'N/A'}`,
+        `Total Gross Area: ${titleDeedData.total_area_sqft ? titleDeedData.total_area_sqft + ' sqft' : 'N/A'}`,
+        `Suite Area: ${titleDeedData.suite_area_sqft ? titleDeedData.suite_area_sqft + ' sqft' : 'N/A'}`,
+        `Bedrooms: ${titleDeedData.bedrooms || '2 Bedrooms'}`,
+        `Bathrooms: ${titleDeedData.bathrooms || '2 Baths'}`,
+        `Allocated Parking: ${titleDeedData.parking_bays?.[0] || '1 Space'}`,
+        `Mortgage: ${titleDeedData.mortgage_status || 'Free & Clear'}`,
+        `Registered Owner: ${titleDeedData.owner_name_english || ''}`
+      ].filter(Boolean).join(' | ');
+
+      setRoughNotes(highlights);
+    }
+
+    if (emiratesIdData && !emiratesIdData.parse_error) {
+      setParsedEidData(emiratesIdData);
+      if (!parsedDeedData?.owner_name_english && emiratesIdData.name_english) {
+        setParsedDeedData(prev => ({
+          ...(prev || {}),
+          owner_name_english: emiratesIdData.name_english
+        }));
+      }
+    }
+    if (kyc) {
+      setKycResult(kyc);
+    }
+  };
+
+  const triggerDocumentAutoFill = async (deed, eids) => {
+    if (!deed && (!eids || eids.length === 0)) return;
+    setIsParsingDocs(true);
+    setError(null);
+    showToast('🤖 AI Analyzing Title Deed & Emirates ID (GPT-4o)...', 'info');
+
+    // 1. Primary: Server-Side AI Pipeline (GPT-4o Multimodal Vision + Digital Stream Parser)
+    let aiSuccess = false;
+    try {
+      const formData = new FormData();
+      if (deed) formData.append('title_deed', deed);
+      if (eids && eids.length > 0) {
+        eids.forEach((f) => formData.append('emirates_id[]', f));
+        formData.append('emirates_id', eids[0]);
+      }
+
+      const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      const pathname = typeof window !== 'undefined' ? window.location.pathname.replace(/\/([^\/]*)$/, '/') : '/';
+
+      const candidateEndpoints = isLocal
+        ? ['/api/listings/parse-documents', '/api/parse-documents.php']
+        : [
+            origin + pathname + 'api/parse-documents.php',
+            origin + '/api/parse-documents.php',
+            origin + '/dashboard/api/parse-documents.php',
+            origin + '/parse-documents.php',
+            'https://dashboard.asquared.ae/api/parse-documents.php',
+            'https://dashboard.asquared.ae/dashboard/api/parse-documents.php'
+          ];
+
+      for (const ep of candidateEndpoints) {
+        try {
+          const res = await axios.post(ep, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 45000, // 45s for deep multimodal GPT-4o analysis
+          });
+          if (res.data && res.data.success && (res.data.titleDeedData || res.data.emiratesIdData)) {
+            const { titleDeedData, emiratesIdData, kycResult: kyc } = res.data;
+            applyExtractedData(titleDeedData, emiratesIdData, kyc);
+            aiSuccess = true;
+            showToast('✨ AI successfully analyzed documents and verified KYC!', 'success');
+            break;
+          }
+        } catch (ignore) {
+          // Continue to next endpoint candidate
+        }
+      }
+    } catch (serverErr) {
+      console.warn('Server parse check:', serverErr);
+    }
+
+    // 2. Direct Browser AI Fallback (GPT-4o Multimodal Vision) if server endpoint was unreachable
+    if (!aiSuccess) {
+      try {
+        const browserAiResult = await parseDocumentsWithBrowserAI(deed, eids);
+        if (browserAiResult && (browserAiResult.titleDeedData || browserAiResult.emiratesIdData)) {
+          applyExtractedData(browserAiResult.titleDeedData, browserAiResult.emiratesIdData, browserAiResult.kycResult);
+          aiSuccess = true;
+          showToast('✨ AI successfully extracted details via multimodal engine!', 'success');
+        }
+      } catch (browserErr) {
+        console.warn('Browser direct AI extraction note:', browserErr);
+      }
+    }
+
+    // 3. Resilient Stream Reader Fallback (only if AI endpoints completely unreachable)
+    if (!aiSuccess) {
+      try {
+        let clientDeed = null;
+        let clientEid = null;
+        if (deed) {
+          const deedText = await extractDocumentText(deed);
+          clientDeed = parseTitleDeedClient(deedText, deed.name);
+        }
+        if (eids && eids.length > 0) {
+          let eidText = '';
+          for (const ef of eids) {
+            eidText += ' ' + await extractDocumentText(ef);
+          }
+          clientEid = parseEmiratesIdClient(eidText, eids[0]?.name || '');
+        }
+
+        if (clientDeed || clientEid) {
+          applyExtractedData(clientDeed, clientEid, null);
+          showToast('Document text parsed via digital stream reader.', 'info');
+        }
+      } catch (clientErr) {
+        console.warn('Client extraction error:', clientErr);
+      }
+    }
+
+    setIsParsingDocs(false);
+  };
+
+  const handleTitleDeedUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setTitleDeedFile(file);
+      triggerDocumentAutoFill(file, emiratesIdFiles);
+    }
+  };
+
+  const handleEmiratesIdUpload = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) {
+      setEmiratesIdFiles(files);
+      triggerDocumentAutoFill(titleDeedFile, files);
+
+      // Auto-extract transparent signature from EID image in background
+      try {
+        const firstFile = files[0];
+        if (firstFile && /\.(jpg|jpeg|png|webp)$/i.test(firstFile.name)) {
+          extractTransparentSignature(firstFile)
+            .then((res) => {
+              if (res && res.signatureDataUrl) {
+                setRentalSpecs((prev) => ({
+                  ...prev,
+                  landlord_signature_png: res.signatureDataUrl,
+                }));
+              }
+            })
+            .catch(() => {});
+        }
+      } catch (err) {}
+    }
+  };
+
+  const handlePriceChange = (e) => {
+    setPrice(formatNumberWithCommas(e.target.value));
+  };
+
+  const handleSizeChange = (e) => {
+    setSizeSqft(formatNumberWithCommas(e.target.value));
+  };
+
+  const togglePreset = (presetId) => {
+    if (presetId === 'asquared_default') {
+      setSelectedPresets(['asquared_default']);
+      setCompiledPrompt(ASQUARED_DEFAULT_PROMPT);
+      return;
+    }
+
+    const withoutDefault = selectedPresets.filter((id) => id !== 'asquared_default');
+    const isCurrentlySelected = withoutDefault.includes(presetId);
+    const newSelected = isCurrentlySelected
+      ? withoutDefault.filter((id) => id !== presetId)
+      : [...withoutDefault, presetId];
+
+    if (newSelected.length === 0) {
+      setSelectedPresets(['asquared_default']);
+      setCompiledPrompt(ASQUARED_DEFAULT_PROMPT);
+      return;
+    }
+
+    setSelectedPresets(newSelected);
+
+    const activeInstructions = newSelected
+      .map((id) => PRESETS.find((p) => p.id === id)?.instruction)
+      .filter(Boolean);
+
+    setCompiledPrompt(activeInstructions.join('\n\n') + '\n\nSTRICT REQUIREMENT: Preserve 100% of the actual property layout, room structure, real furniture, and authentic view.');
+  };
+
+  const handleFilesAdded = (filesArray) => {
+    setError(null);
+    const validFiles = [];
+    const validPreviews = [];
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+
+    Array.from(filesArray).forEach((file) => {
+      if (allowedTypes.includes(file.type)) {
+        validFiles.push(file);
+        validPreviews.push({
+          id: Math.random().toString(36).substr(2, 9),
+          file,
+          url: URL.createObjectURL(file),
+          name: file.name,
+          size: (file.size / (1024 * 1024)).toFixed(2) + ' MB',
+        });
+      }
+    });
+
+    if (validFiles.length < filesArray.length) {
+      setError('Some files were skipped. Only JPG, PNG, and WEBP formats are supported.');
+    }
+
+    setSelectedFiles((prev) => [...prev, ...validFiles]);
+    setPreviews((prev) => [...prev, ...validPreviews]);
+  };
+
+  // Clipboard Paste Support (Ctrl + V)
+  useEffect(() => {
+    const handlePaste = (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const pastedFiles = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          const file = items[i].getAsFile();
+          if (file) pastedFiles.push(file);
+        }
+      }
+
+      if (pastedFiles.length > 0) {
+        handleFilesAdded(pastedFiles);
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, []);
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesAdded(e.dataTransfer.files);
+    }
+  };
+
+  const handleRemoveImage = (index) => {
+    URL.revokeObjectURL(previews[index].url);
+    setPreviews((prev) => prev.filter((_, i) => i !== index));
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSetCover = (index) => {
+    if (index === 0) return;
+    setPreviews((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(index, 1);
+      next.unshift(item);
+      return next;
+    });
+    setSelectedFiles((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(index, 1);
+      next.unshift(item);
+      return next;
+    });
+    showToast('Cover photo set to position #1', 'info');
+  };
+
+  const handleMoveImage = (index, delta) => {
+    const targetIdx = index + delta;
+    if (targetIdx < 0 || targetIdx >= previews.length) return;
+    setPreviews((prev) => {
+      const next = [...prev];
+      const temp = next[index];
+      next[index] = next[targetIdx];
+      next[targetIdx] = temp;
+      return next;
+    });
+    setSelectedFiles((prev) => {
+      const next = [...prev];
+      const temp = next[index];
+      next[index] = next[targetIdx];
+      next[targetIdx] = temp;
+      return next;
+    });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      setError('Please enter a listing or property name (or drop Title Deed to auto-fill).');
+      return;
+    }
+
+    const isDraft = selectedFiles.length === 0;
+
+    setIsSubmitting(true);
+    setError(null);
+    setUploadProgress({
+      current: 0,
+      total: selectedFiles.length,
+      text: isDraft ? 'Saving draft listing record...' : 'Preparing listing package...'
+    });
+
+    const cleanPrice = price ? Number(String(price).replace(/[^0-9.]/g, '')) : null;
+    const cleanSqft = sizeSqft ? Number(String(sizeSqft).replace(/[^0-9.]/g, '')) : null;
+
+    const rentalSpecs = purpose === 'For Rent' ? {
+      cheques,
+      occupancy_status: occupancyStatus,
+      furnishing,
+      owner_phone: ownerPhone ? String(ownerPhone) : '',
+      owner_email: ownerEmail ? String(ownerEmail) : '',
+      agreement_duration: agreementDuration,
+      agreement_until_date: agreementUntilDate,
+      agreement_type: agreementType,
+      security_deposit: securityDeposit,
+      price: cleanPrice ? String(cleanPrice) : (price ? String(price).replace(/[^0-9.]/g, '') : ''),
+      size_sqft: cleanSqft ? String(cleanSqft) : (sizeSqft ? String(sizeSqft).replace(/[^0-9.]/g, '') : ''),
+    } : {};
+
+    const commercialSpecs = {
+      broker_name: 'A SQUARED REAL ESTATE',
+      broker_agent_name: 'Melanie Simsiman',
+      broker_brn: 'ORN: 28491 / BRN: 54120',
+      broker_phone: '+971 4 000 0000',
+      broker_email: 'luxury@asquared.ae',
+      owner_name: parsedDeedData?.owner_name_english || '',
+      owner_phone: ownerPhone ? String(ownerPhone) : '',
+      owner_email: ownerEmail ? String(ownerEmail) : '',
+      price: cleanPrice ? String(cleanPrice) : (price ? String(price).replace(/[^0-9.]/g, '') : ''),
+      asking_price: cleanPrice ? String(cleanPrice) : (price ? String(price).replace(/[^0-9.]/g, '') : ''),
+      bua_sqft: cleanSqft ? String(cleanSqft) : (sizeSqft ? String(sizeSqft).replace(/[^0-9.]/g, '') : ''),
+      building_name: parsedDeedData?.building_name || name.split('Unit')?.[0]?.trim() || '',
+      unit_number: parsedDeedData?.unit_number || '',
+      community: parsedDeedData?.community || 'Dubai',
+    };
+
+    const isLocal = typeof window !== 'undefined' && 
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+    // If local dev environment, attempt local Express server first
+    if (isLocal) {
+      try {
+        const formData = new FormData();
+        formData.append('name', name);
+        formData.append('reference', reference);
+        formData.append('purpose', purpose);
+        formData.append('price', price);
+        formData.append('property_type', propertyType);
+        formData.append('bedrooms', bedrooms);
+        formData.append('bathrooms', bathrooms);
+        formData.append('size_sqft', sizeSqft);
+        formData.append('rough_notes', roughNotes);
+        formData.append('prompt', compiledPrompt);
+
+        if (purpose === 'For Rent') {
+          formData.append('cheques', cheques);
+          formData.append('occupancy_status', occupancyStatus);
+          formData.append('furnishing', furnishing);
+          formData.append('owner_phone', ownerPhone);
+          formData.append('owner_email', ownerEmail);
+          formData.append('agreement_duration', agreementDuration);
+          formData.append('agreement_until_date', agreementUntilDate);
+          formData.append('agreement_type', agreementType);
+          formData.append('security_deposit', securityDeposit);
+        }
+
+        selectedFiles.forEach((file) => formData.append('images', file));
+
+        let response;
+        if (titleDeedFile || parsedDeedData) {
+          if (titleDeedFile) formData.append('title_deed', titleDeedFile);
+          emiratesIdFiles.forEach((f) => formData.append('emirates_id', f));
+          if (parsedDeedData) formData.append('parsed_deed_json', JSON.stringify(parsedDeedData));
+          if (parsedEidData) formData.append('parsed_eid_json', JSON.stringify(parsedEidData));
+          if (kycResult) formData.append('parsed_kyc_json', JSON.stringify(kycResult));
+          formData.append('auto_enhance', 'true');
+
+          response = await axios.post('/api/listings/create-with-dossier', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 8000,
+          });
+        } else {
+          response = await axios.post('/api/listings', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 8000,
+          });
+        }
+
+        if (response.data && response.data.success) {
+          if (onListingCreated) onListingCreated(response.data.listing);
+          return;
+        }
+      } catch (localErr) {
+        console.warn('Local Express create failed/timed out, continuing to Supabase pipeline:', localErr.message);
+      }
+    }
+
+    // Direct Supabase Storage & Database Pipeline (Production-Ready)
+    try {
+      const newListingId = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+        ? crypto.randomUUID() 
+        : 'lst_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+      // 1. Upload Documents if present
+      let deedDocUrl = null;
+      if (titleDeedFile) {
+        setUploadProgress({ current: 0, total: selectedFiles.length, text: 'Uploading Title Deed to secure storage...' });
+        try {
+          const deedRes = await uploadListingDocument(titleDeedFile, newListingId, 'deeds');
+          deedDocUrl = deedRes?.publicUrl || null;
+        } catch (dErr) {
+          console.warn('Title deed storage upload warning:', dErr.message);
+        }
+      }
+
+      // 1.5 Generate AI Multi-Channel Marketing Copy & SEO Title
+      setUploadProgress({ current: 0, total: selectedFiles.length, text: 'Generating AI Marketing Copy & SEO Titles...' });
+      let copyData = null;
+      try {
+        const copyPayload = {
+          name: name.trim(),
+          reference: reference && reference.trim() ? reference.trim() : `ASQ-PROP-${Date.now().toString().slice(-4)}`,
+          property_type: propertyType || 'Apartment',
+          purpose: purpose || 'For Sale',
+          price: cleanPrice ? String(cleanPrice) : '',
+          bedrooms: bedrooms || '2 Bedrooms',
+          bathrooms: bathrooms || '2 Baths',
+          size_sqft: cleanSqft ? String(cleanSqft) : '',
+          furnishing: furnishing || 'Unfurnished',
+          community: parsedDeedData?.community || 'Dubai',
+          rough_notes: roughNotes || '',
+          tone: 'luxury',
+        };
+
+        const isLocalHost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+        const copyDirect = isLocalHost
+          ? 'http://localhost:5000/api_ai_copywriter.php'
+          : (window.location.origin + window.location.pathname.replace(/\/([^\/]*)$/, '/') + 'api_ai_copywriter.php');
+        const copyEndpoints = isLocalHost
+          ? ['http://localhost:5000/api_ai_copywriter.php']
+          : [copyDirect, 'https://dashboard.asquared.ae/api_ai_copywriter.php'];
+
+        for (const ep of copyEndpoints) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
+            const cRes = await fetch(ep, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(copyPayload),
+              signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            if (cRes.ok) {
+              const cJson = await cRes.json();
+              if (cJson && (cJson.copyData || cJson.copy)) {
+                copyData = cJson.copyData || cJson.copy;
+                break;
+              }
+            }
+          } catch (e) {}
+        }
+      } catch (copyErr) {
+        console.warn('AI copy generation note:', copyErr);
+      }
+
+      // 2. Insert Listing Row into Supabase
+      setUploadProgress({ current: 0, total: selectedFiles.length, text: 'Registering listing record...' });
+      const listingPayload = {
+        id: newListingId,
+        name: name.trim(),
+        reference: reference && reference.trim() ? reference.trim() : `ASQ-PROP-${Date.now().toString().slice(-4)}`,
+        property_type: propertyType || 'Apartment',
+        purpose: purpose || 'For Sale',
+        price: cleanPrice,
+        bedrooms: bedrooms || '2 Bedrooms',
+        bathrooms: bathrooms || '2 Baths',
+        size_sqft: cleanSqft,
+        building_name: parsedDeedData?.building_name || name.split('Unit')?.[0]?.trim() || '',
+        unit_number: parsedDeedData?.unit_number || '',
+        community: parsedDeedData?.community || 'Dubai',
+        furnishing: furnishing || 'Unfurnished',
+        rental_specs: rentalSpecs,
+        commercial_specs: commercialSpecs,
+        dossier_data: { ...(parsedDeedData || {}), deed_file_url: deedDocUrl },
+        kyc_data: { emiratesIdData: parsedEidData, kycResult },
+        prompt: compiledPrompt,
+        enhancement_model: modelTier === 'sunburst' ? 'gpt-image-2.5-sunburst' : 'gpt-image-2.5-flare',
+        copy_data: copyData || {},
+        status: isDraft ? 'draft' : (selectedFiles.length > 0 ? 'processing' : 'completed'),
+        total_images: selectedFiles.length,
+        completed_images: 0,
+        failed_images: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const createdRows = await sbFetch('/real_estate_listings', {
+        method: 'POST',
+        headers: { 'Prefer': 'return=representation' },
+        body: JSON.stringify([listingPayload]),
+      });
+
+      const createdListing = (createdRows && createdRows[0]) ? createdRows[0] : listingPayload;
+
+      // 3. Upload Original Photos & Trigger Server Neural Enhancement Engine
+      if (!isDraft && selectedFiles.length > 0) {
+        const uploadedImages = [];
+        for (let i = 0; i < selectedFiles.length; i++) {
+          const file = selectedFiles[i];
+
+          setUploadProgress({
+            current: i + 1,
+            total: selectedFiles.length,
+            text: `Uploading original photo ${i + 1} of ${selectedFiles.length}...`
+          });
+
+          let originalUrl = null;
+          try {
+            const origRes = await uploadListingImage(file, newListingId);
+            originalUrl = origRes.publicUrl;
+          } catch (uploadErr) {
+            console.warn(`Direct storage upload failed for ${file.name}, using data URL fallback:`, uploadErr.message);
+            originalUrl = previews[i]?.url || URL.createObjectURL(file);
+          }
+
+          uploadedImages.push({
+            filename: file.name,
+            originalUrl,
+          });
+        }
+
+        // 4. Insert Images Rows into Supabase (queued for photo processing)
+        setUploadProgress({
+          current: selectedFiles.length,
+          total: selectedFiles.length,
+          text: `Starting ${modelTier === 'sunburst' ? 'Sunburst Luxury' : 'Flare High-Speed'} photo enhancement...`
+        });
+
+        const imageRows = uploadedImages.map((img, idx) => ({
+          listing_id: newListingId,
+          original_filename: img.filename,
+          original_image_location: img.originalUrl,
+          generated_image_location: img.originalUrl,
+          baseline_image_location: img.originalUrl,
+          room_type: DEFAULT_SEQUENCE[idx % DEFAULT_SEQUENCE.length] || 'Property_Photo',
+          display_order: idx,
+          is_cover: idx === 0,
+          status: 'queued',
+          created_at: new Date().toISOString(),
+        }));
+
+        const createdImageRows = await sbFetch('/real_estate_images', {
+          method: 'POST',
+          headers: { 'Prefer': 'return=representation' },
+          body: JSON.stringify(imageRows),
+        });
+
+        // 5. Neural Photo Enhancement with Live UI Progress
+        const targetImages = (createdImageRows && createdImageRows.length > 0) ? createdImageRows : imageRows;
+        try {
+          await enhanceListingBatch({
+            listingId: newListingId,
+            images: targetImages,
+            modelTier,
+            prompt: compiledPrompt,
+            onProgress: (current, total, text) => {
+              setUploadProgress({ current, total, text });
+            }
+          });
+        } catch (procErr) {
+          console.warn('Batch neural enhancement note:', procErr);
+        }
+      }
+
+      showToast(
+        isDraft
+          ? '✨ Draft listing created! You can drop photos anytime from the details page.'
+          : '✨ Property listing and enhanced photos created successfully!',
+        'success'
+      );
+      try {
+        localStorage.removeItem('asquared_new_listing_draft');
+      } catch (e) {}
+      if (onListingCreated) {
+        onListingCreated(createdListing);
+      }
+    } catch (directErr) {
+      console.error('Supabase creation pipeline error:', directErr);
+      setError(directErr.message || 'Failed to create listing. Please check connection.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto py-4 px-2 sm:px-4">
+      {/* Page Title & Back Button */}
+      <div className="flex items-center justify-between gap-4 mb-6">
+        <div>
+          <h1 className="ds-page-title">
+            Create Property Listing &amp; AI Package
+          </h1>
+        </div>
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="ds-btn-secondary"
+          >
+            ← Back to Listings
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-xl p-4 flex items-start gap-3 text-red-400 text-sm">
+          <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+          <div>{error}</div>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-8">
+        {/* SMART DOCUMENT AUTO-FILL INGESTION CARD */}
+        <div className="glass-card p-6 border border-blue-500/30 bg-gradient-to-br from-navy-900/60 via-navy-950/60 to-black/60 relative overflow-hidden">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-white/[0.08] mb-5">
+            <div>
+              <h2 className="text-lg font-sans font-bold text-white flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-purple-400" /> Auto-Fill Listing from Title Deed &amp; Emirates ID
+              </h2>
+            </div>
+            {isParsingDocs && (
+              <span className="flex items-center gap-2 text-xs font-bold text-purple-400 animate-pulse bg-purple-500/10 px-3 py-1.5 rounded-xl border border-purple-500/20">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Analyzing documents...
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Deed Dropzone */}
+            <div>
+              <input
+                ref={deedInputRef}
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.webp"
+                className="hidden"
+                onChange={handleTitleDeedUpload}
+              />
+              <div
+                onClick={() => deedInputRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const file = e.dataTransfer?.files?.[0];
+                  if (file) {
+                    setTitleDeedFile(file);
+                    triggerDocumentAutoFill(file, emiratesIdFiles);
+                  }
+                }}
+                className={`p-4 rounded-2xl border-2 border-dashed cursor-pointer transition-all flex items-center gap-3.5 relative ${
+                  titleDeedFile || parsedDeedData
+                    ? 'border-blue-500/60 bg-blue-500/10'
+                    : 'border-white/[0.12] hover:border-blue-400/40 bg-white/[0.02] hover:bg-white/[0.04]'
+                }`}
+              >
+                <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+                  {isParsingDocs ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
+                  ) : (titleDeedFile || parsedDeedData) ? (
+                    <FileCheck className="w-5 h-5 text-blue-400" />
+                  ) : (
+                    <FileBadge2 className="w-5 h-5" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <p className="text-xs font-bold text-white truncate">
+                    {titleDeedFile?.name || (parsedDeedData ? `${parsedDeedData.building_name} (Deed #${parsedDeedData.certificate_number})` : '1. Upload Title Deed / Oqood (سند ملكية)')}
+                  </p>
+                  <p className="text-[11px] text-white/60">
+                    {parsedDeedData ? `✓ ${parsedDeedData.total_area_sqft || parsedDeedData.suite_area_sqft} sqft • ${parsedDeedData.community || 'Dubai'}` : 'Click or drop PDF / image scan to auto-fill specs'}
+                  </p>
+                </div>
+                {parsedDeedData && (
+                  <span className="text-[10px] uppercase font-bold text-blue-400 bg-blue-500/20 px-2 py-0.5 rounded-md">
+                    Verified
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* EID Dropzone */}
+            <div>
+              <input
+                ref={eidInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.jpg,.jpeg,.png,.webp"
+                className="hidden"
+                onChange={handleEmiratesIdUpload}
+              />
+              <div
+                onClick={() => eidInputRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const files = Array.from(e.dataTransfer?.files || []);
+                  if (files.length > 0) {
+                    setEmiratesIdFiles(files);
+                    triggerDocumentAutoFill(titleDeedFile, files);
+                  }
+                }}
+                className={`p-4 rounded-2xl border-2 border-dashed cursor-pointer transition-all flex items-center gap-3.5 relative ${
+                  emiratesIdFiles.length > 0 || parsedEidData
+                    ? 'border-emerald-500/60 bg-emerald-500/10'
+                    : 'border-white/[0.12] hover:border-emerald-400/40 bg-white/[0.02] hover:bg-white/[0.04]'
+                }`}
+              >
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+                  {isParsingDocs ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+                  ) : (emiratesIdFiles.length > 0 || parsedEidData) ? (
+                    <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                  ) : (
+                    <UserCheck className="w-5 h-5" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <p className="text-xs font-bold text-white truncate">
+                    {parsedEidData?.full_name_english || (emiratesIdFiles.length > 0 ? `${emiratesIdFiles.length} Emirates ID File(s)` : '2. Upload Emirates ID (Front & Back)')}
+                  </p>
+                  <p className="text-[11px] text-white/60">
+                    {parsedEidData ? `✓ EID: ${parsedEidData.eid_number || 'Valid'} (${parsedEidData.nationality})` : 'Click or drop ID card to verify owner identity'}
+                  </p>
+                </div>
+                {kycResult && (
+                  <span className="text-[10px] uppercase font-bold text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-md">
+                    Match {kycResult.confidence_score}%
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Document Verification Scorecard */}
+          {(parsedDeedData || parsedEidData) && (
+            <div className="mt-5 pt-4 border-t border-white/[0.08] animate-fade-in">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></div>
+                  <h3 className="text-xs font-bold text-white uppercase tracking-wider">
+                    Document Verification &amp; Identity Match
+                  </h3>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                {/* 1. DLD Certificate */}
+                <div className="bg-[#06111e] border border-[#1b2b3d] rounded-xl p-3 flex flex-col justify-between">
+                  <span className="text-[10px] text-slate-400 font-medium">DLD Certificate / Title Deed</span>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="font-sans tabular-nums text-white text-[11px] font-semibold truncate">
+                      {parsedDeedData?.certificate_number || 'N/A'}
+                    </span>
+                    {parsedDeedData?.certificate_number ? (
+                      <span className="text-emerald-400 text-[10px] font-bold">Verified</span>
+                    ) : (
+                      <span className="text-amber-400 text-[10px] font-bold">Review</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Total Area */}
+                <div className="bg-[#06111e] border border-[#1b2b3d] rounded-xl p-3 flex flex-col justify-between">
+                  <span className="text-[10px] text-slate-400 font-medium">Area Specs (Gross / Suite)</span>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="font-sans tabular-nums text-white text-[11px] font-semibold truncate">
+                      {parsedDeedData?.total_area_sqft || parsedDeedData?.suite_area_sqft ? `${parsedDeedData.total_area_sqft || parsedDeedData.suite_area_sqft} sqft` : 'N/A'}
+                    </span>
+                    {parsedDeedData?.total_area_sqft || parsedDeedData?.suite_area_sqft ? (
+                      <span className="text-emerald-400 text-[10px] font-bold">Verified</span>
+                    ) : (
+                      <span className="text-amber-400 text-[10px] font-bold">Review</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 3. Community / Location */}
+                <div className="bg-[#06111e] border border-[#1b2b3d] rounded-xl p-3 flex flex-col justify-between">
+                  <span className="text-[10px] text-slate-400 font-medium">Master Community</span>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="font-medium text-white text-[11px] truncate">
+                      {parsedDeedData?.community || 'Dubai'}
+                    </span>
+                    <span className="text-emerald-400 text-[10px] font-bold">Verified</span>
+                  </div>
+                </div>
+
+                {/* 4. KYC Identity Match */}
+                <div className="bg-[#06111e] border border-[#1b2b3d] rounded-xl p-3 flex flex-col justify-between">
+                  <span className="text-[10px] text-slate-400 font-medium">KYC Legal Name Match</span>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="font-sans tabular-nums text-white text-[11px] truncate">
+                      {kycResult?.is_match ? 'Matched' : (parsedEidData ? 'Verified EID' : 'Pending EID')}
+                    </span>
+                    {kycResult?.is_match ? (
+                      <span className="text-emerald-400 text-[10px] font-bold">✓ {kycResult.confidence_score}%</span>
+                    ) : (
+                      <span className="text-blue-400 text-[10px] font-bold">Valid</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Step 1: Property Listing Information */}
+        <div className="ds-card p-6">
+          <h2 className="text-base font-bold text-white mb-5 flex items-center gap-2 border-b border-white/[0.06] pb-3">
+            <Building className="w-5 h-5 text-blue-500" /> Step 1: Property Listing Information
+          </h2>
+
+          <div className="space-y-5">
+            {/* Row 1: Name & Reference */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <div className="md:col-span-2">
+                <label htmlFor="listing_name_field" className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2">
+                  PROPERTY / BUILDING NAME <span className="text-blue-500">*</span>
+                </label>
+                <input
+                  id="listing_name_field"
+                  name="listing_name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Marina Gate 2, Dubai Marina"
+                  required
+                  className="w-full glass-input rounded-xl px-4 py-2.5 text-bone-100 placeholder-slate-500 focus:outline-none transition-all text-sm"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="listing_ref_field" className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2">
+                  # REFERENCE (OPTIONAL)
+                </label>
+                <input
+                  id="listing_ref_field"
+                  name="listing_reference"
+                  type="text"
+                  value={reference}
+                  onChange={(e) => setReference(e.target.value)}
+                  placeholder="e.g. MG-2026-09"
+                  className="w-full glass-input rounded-xl px-4 py-2.5 text-bone-100 placeholder-slate-500 focus:outline-none transition-all text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Row 2: Listing Purpose, Price, Property Type */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2">
+                  LISTING PURPOSE
+                </label>
+                <div className="grid grid-cols-2 gap-2 glass-pill p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setPurpose('For Sale')}
+                    className={`py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      purpose === 'For Sale'
+                        ? 'bg-white/[0.06] text-white shadow'
+                        : 'text-white/60 hover:text-white'
+                    }`}
+                  >
+                    For Sale
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPurpose('For Rent')}
+                    className={`py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      purpose === 'For Rent'
+                        ? 'bg-white/[0.06] text-white shadow'
+                        : 'text-white/60 hover:text-white'
+                    }`}
+                  >
+                    For Rent
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label htmlFor="listing_price_field" className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2 flex items-center gap-1">
+                  <span className="text-blue-500 font-bold">$</span> PRICE (AED)
+                </label>
+                <input
+                  id="listing_price_field"
+                  name="listing_price"
+                  type="text"
+                  value={price}
+                  onChange={handlePriceChange}
+                  placeholder="e.g. 2,850,000"
+                  className="w-full glass-input rounded-xl px-4 py-2.5 text-bone-100 placeholder-slate-500 focus:outline-none transition-all text-sm"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="listing_type_field" className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2 flex items-center gap-1">
+                  <Home className="w-3.5 h-3.5 text-white/60" /> PROPERTY TYPE
+                </label>
+                <select
+                  id="listing_type_field"
+                  name="listing_property_type"
+                  value={propertyType}
+                  onChange={(e) => setPropertyType(e.target.value)}
+                  className="w-full glass-input rounded-xl px-4 py-2.5 text-bone-100 focus:outline-none transition-all text-sm cursor-pointer"
+                >
+                  <option value="Apartment">Apartment</option>
+                  <option value="Villa">Villa</option>
+                  <option value="Townhouse">Townhouse</option>
+                  <option value="Land">Land (Plot)</option>
+                  <option value="Office">Office</option>
+                  <option value="Warehouse">Warehouse</option>
+                  <option value="Shop">Shop / Retail</option>
+                  <option value="Building">Full Building</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Row 3: Bedrooms, Bathrooms, Size */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <div>
+                <label htmlFor="listing_beds_field" className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2 flex items-center gap-1">
+                  <BedDouble className="w-3.5 h-3.5 text-white/60" /> BEDROOMS
+                </label>
+                <select
+                  id="listing_beds_field"
+                  name="listing_bedrooms"
+                  value={bedrooms}
+                  onChange={(e) => setBedrooms(e.target.value)}
+                  className="w-full glass-input rounded-xl px-4 py-2.5 text-bone-100 focus:outline-none transition-all text-sm cursor-pointer"
+                >
+                  <option value="Studio">Studio</option>
+                  <option value="1 Bedroom">1 Bedroom</option>
+                  <option value="2 Bedrooms">2 Bedrooms</option>
+                  <option value="3 Bedrooms">3 Bedrooms</option>
+                  <option value="4 Bedrooms">4 Bedrooms</option>
+                  <option value="5+ Bedrooms">5+ Bedrooms</option>
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="listing_baths_field" className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2 flex items-center gap-1">
+                  <Bath className="w-3.5 h-3.5 text-white/60" /> BATHROOMS
+                </label>
+                <select
+                  id="listing_baths_field"
+                  name="listing_bathrooms"
+                  value={bathrooms}
+                  onChange={(e) => setBathrooms(e.target.value)}
+                  className="w-full glass-input rounded-xl px-4 py-2.5 text-bone-100 focus:outline-none transition-all text-sm cursor-pointer"
+                >
+                  <option value="1 Bath">1 Bath</option>
+                  <option value="2 Baths">2 Baths</option>
+                  <option value="3 Baths">3 Baths</option>
+                  <option value="4 Baths">4 Baths</option>
+                  <option value="5+ Baths">5+ Baths</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="listing_size_field" className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2 flex items-center gap-1">
+                  <Maximize2 className="w-3.5 h-3.5 text-white/60" /> SIZE (SQ. FT.)
+                </label>
+                <input
+                  id="listing_size_field"
+                  name="listing_size_sqft"
+                  type="text"
+                  value={sizeSqft}
+                  onChange={handleSizeChange}
+                  placeholder="e.g. 1,450"
+                  className="w-full glass-input rounded-xl px-4 py-2.5 text-bone-100 placeholder-slate-500 focus:outline-none transition-all text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Dedicated Rental Terms & Landlord Representation Specs */}
+            {purpose === 'For Rent' && (
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-blue-500/[0.08] via-navy-900/60 to-black/60 border border-blue-500/30 space-y-4 animate-fade-in shadow-xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/[0.08] pb-3">
+                  <div className="flex items-center gap-2">
+                    <FileBadge2 className="w-5 h-5 text-blue-400 shrink-0" />
+                    <div>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-white">
+                        Official Rental Listing Form &amp; NOC Setup
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <label htmlFor="rental_cheques_select" className="block text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1.5">
+                      Cheques
+                    </label>
+                    <select
+                      id="rental_cheques_select"
+                      name="rental_cheques"
+                      value={cheques}
+                      onChange={(e) => setCheques(e.target.value)}
+                      className="w-full glass-input rounded-xl px-3 py-2 text-bone-100 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="1 Cheque">1 Cheque</option>
+                      <option value="2 Cheques">2 Cheques</option>
+                      <option value="3 Cheques">3 Cheques</option>
+                      <option value="4 Cheques">4 Cheques</option>
+                      <option value="6 Cheques">6 Cheques</option>
+                      <option value="12 Cheques">12 Cheques</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label htmlFor="rental_occupancy_select" className="block text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1.5">
+                      Occupancy Status
+                    </label>
+                    <select
+                      id="rental_occupancy_select"
+                      name="rental_occupancy_status"
+                      value={occupancyStatus}
+                      onChange={(e) => setOccupancyStatus(e.target.value)}
+                      className="w-full glass-input rounded-xl px-3 py-2 text-bone-100 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="Vacant">Vacant</option>
+                      <option value="Tenanted">Tenanted</option>
+                      <option value="Owner Occupied">Owner Occupied</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label htmlFor="rental_furnishing_select" className="block text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1.5">
+                      Furnishing
+                    </label>
+                    <select
+                      id="rental_furnishing_select"
+                      name="rental_furnishing"
+                      value={furnishing}
+                      onChange={(e) => setFurnishing(e.target.value)}
+                      className="w-full glass-input rounded-xl px-3 py-2 text-bone-100 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="Unfurnished">Unfurnished</option>
+                      <option value="Furnished">Furnished</option>
+                      <option value="Semi-Furnished">Semi-Furnished</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label htmlFor="rental_deposit_input" className="block text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1.5">
+                      Security Deposit
+                    </label>
+                    <input
+                      id="rental_deposit_input"
+                      name="rental_security_deposit"
+                      type="text"
+                      value={securityDeposit ?? ''}
+                      onChange={(e) => setSecurityDeposit(e.target.value)}
+                      placeholder="e.g. 5% or 10%"
+                      className="w-full glass-input rounded-xl px-3 py-2 text-bone-100 text-xs focus:outline-none placeholder-slate-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <label htmlFor="rental_owner_phone_input" className="block text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1.5">
+                      Landlord Contact Phone
+                    </label>
+                    <input
+                      id="rental_owner_phone_input"
+                      name="rental_owner_phone"
+                      type="text"
+                      value={ownerPhone ?? ''}
+                      onChange={(e) => setOwnerPhone(e.target.value)}
+                      placeholder="e.g. +971 50 123 4567"
+                      className="w-full glass-input rounded-xl px-3 py-2 text-bone-100 text-xs focus:outline-none placeholder-slate-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="rental_owner_email_input" className="block text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1.5">
+                      Landlord Email
+                    </label>
+                    <input
+                      id="rental_owner_email_input"
+                      name="rental_owner_email"
+                      type="email"
+                      value={ownerEmail ?? ''}
+                      onChange={(e) => setOwnerEmail(e.target.value)}
+                      placeholder="e.g. landlord@example.com"
+                      className="w-full glass-input rounded-xl px-3 py-2 text-bone-100 text-xs focus:outline-none placeholder-slate-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="rental_mandate_select" className="block text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1.5">
+                      Mandate Representation
+                    </label>
+                    <select
+                      id="rental_mandate_select"
+                      name="rental_mandate_type"
+                      value={agreementType}
+                      onChange={(e) => setAgreementType(e.target.value)}
+                      className="w-full glass-input rounded-xl px-3 py-2 text-bone-100 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="Non-Exclusive">Non-Exclusive</option>
+                      <option value="Exclusive">Exclusive</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label htmlFor="rental_duration_select" className="block text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1.5">
+                      Mandate Duration
+                    </label>
+                    <select
+                      id="rental_duration_select"
+                      name="rental_mandate_duration"
+                      value={agreementDuration}
+                      onChange={(e) => setAgreementDuration(e.target.value)}
+                      className="w-full glass-input rounded-xl px-3 py-2 text-bone-100 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="1 Month">1 Month</option>
+                      <option value="2 Month">2 Month</option>
+                      <option value="3 Month">3 Month</option>
+                      <option value="Or Until">Or Until (Specific Date)</option>
+                    </select>
+                    {agreementDuration === 'Or Until' && (
+                      <input
+                        id="rental_until_date_input"
+                        name="rental_until_date"
+                        type="text"
+                        value={agreementUntilDate}
+                        onChange={(e) => setAgreementUntilDate(e.target.value)}
+                        placeholder="e.g. 31/12/2026"
+                        className="w-full glass-input rounded-xl px-3 py-1.5 text-bone-100 text-[11px] focus:outline-none mt-1.5"
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Row 4: Rough Notes */}
+            <div>
+              <label htmlFor="listing_rough_notes_textarea" className="block text-[11px] font-bold uppercase tracking-wider text-blue-400 mb-2 flex items-center gap-1">
+                <FileText className="w-3.5 h-3.5 text-blue-500" /> ROUGH NOTES & HIGHLIGHTS (FOR BAYUT & PROPERTY FINDER GENERATOR)
+              </label>
+              <textarea
+                id="listing_rough_notes_textarea"
+                name="listing_rough_notes"
+                rows={3}
+                value={roughNotes}
+                onChange={(e) => setRoughNotes(e.target.value)}
+                placeholder="e.g. Full Marina view, high floor, chiller free, upgraded kitchen, vacant on transfer, infinity pool access, 2 mins to tram..."
+                className="w-full glass-input rounded-xl p-3.5 text-bone-100 text-sm placeholder-slate-500 focus:outline-none transition-all leading-relaxed"
+              ></textarea>
+            </div>
+          </div>
+        </div>
+
+        {/* Step 2: Upload Listing Photos */}
+        <div className="ds-card p-6">
+          <div className="flex items-center justify-between border-b border-white/[0.06] pb-3 mb-5">
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <ImageIcon className="w-5 h-5 text-blue-500" /> Step 2: Upload Listing Photos
+            </h2>
+            {previews.length > 0 && (
+              <span className="text-xs text-blue-400 bg-blue-500/10 px-3 py-1 rounded-full font-medium border border-blue-500/25">
+                {previews.length} photos selected
+              </span>
+            )}
+          </div>
+
+          {/* Drag & Drop Box */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${
+              isDragging
+                ? 'border-blue-400 bg-blue-500/10 scale-[0.99]'
+                : 'border-white/[0.12] hover:border-white/[0.04] bg-black/20 hover:bg-black/30'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/jpeg,image/jpg,image/png,image/webp"
+              className="hidden"
+              onChange={(e) => e.target.files && handleFilesAdded(e.target.files)}
+            />
+
+            <div className="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/25 text-blue-400 flex items-center justify-center mx-auto mb-3.5 shadow-lg shadow-black/40">
+              <Upload className="w-7 h-7" />
+            </div>
+
+            <p className="text-sm font-semibold text-white">
+              Drag & drop property images, or <span className="text-blue-400 underline decoration-khaki-400/50 underline-offset-4">browse files</span>
+            </p>
+            <p className="text-xs text-white/60 mt-2 flex items-center justify-center gap-1 flex-wrap font-sans">
+              <span>✨ Direct Clipboard Paste supported:</span>
+              <span>Press</span>
+              <kbd className="px-1.5 py-0.5 glass-pill rounded text-[11px] font-sans tabular-nums text-blue-400">Ctrl + V</kbd>
+              <span>anywhere to paste photos directly from WhatsApp or email!</span>
+            </p>
+          </div>
+
+          {/* Image Previews */}
+          {previews.length > 0 && (
+            <div className="mt-6">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-blue-400">
+                  Uploaded Photos ({previews.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    previews.forEach((p) => URL.revokeObjectURL(p.url));
+                    setPreviews([]);
+                    setSelectedFiles([]);
+                  }}
+                  className="text-xs text-red-400 hover:text-red-300 font-semibold"
+                >
+                  Clear All
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                {previews.map((item, idx) => (
+                  <div
+                    key={item.id}
+                    className="relative group bg-black/40 rounded-xl overflow-hidden border border-white/[0.08] shadow-md hover:border-blue-500/40 transition-all"
+                  >
+                    <img
+                      src={item.url}
+                      alt={item.name}
+                      className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+
+                    {/* Order Controls & Cover Selector */}
+                    <div className="absolute top-1 left-1 flex items-center gap-1 z-10">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSetCover(idx);
+                        }}
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold backdrop-blur-md transition-all cursor-pointer ${
+                          idx === 0 
+                            ? 'bg-amber-500 text-white shadow-sm' 
+                            : 'bg-black/70 hover:bg-amber-500/80 text-white/80'
+                        }`}
+                        title={idx === 0 ? 'Main Cover Photo (#1)' : 'Click to make Cover Photo'}
+                      >
+                        {idx === 0 ? '★ COVER' : 'COVER'}
+                      </button>
+                      {idx > 0 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleMoveImage(idx, -1);
+                          }}
+                          className="w-4 h-4 rounded bg-black/70 hover:bg-white/20 text-white flex items-center justify-center text-[10px] cursor-pointer"
+                          title="Move Left"
+                        >
+                          ‹
+                        </button>
+                      )}
+                      {idx < previews.length - 1 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleMoveImage(idx, 1);
+                          }}
+                          className="w-4 h-4 rounded bg-black/70 hover:bg-white/20 text-white flex items-center justify-center text-[10px] cursor-pointer"
+                          title="Move Right"
+                        >
+                          ›
+                        </button>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveImage(idx);
+                      }}
+                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/80 hover:bg-red-600 text-white flex items-center justify-center backdrop-blur-md transition-colors shadow-md cursor-pointer z-10"
+                      title="Remove photo"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                    <div className="p-1.5 bg-black/60 border-t border-white/[0.06]">
+                      <p className="text-[10px] font-medium text-bone-100 truncate">{item.name}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Step 3: Photo QA & Enhancement Preset */}
+        <div className="ds-card p-6">
+          <div className="border-b border-white/[0.06] pb-3 mb-5 flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-blue-500" /> Step 3: Real Estate Photo QA &amp; Enhancement Preset
+              </h2>
+            </div>
+          </div>
+
+          {/* DUAL-MODE NEURAL MODEL SELECTOR (Option C: Flare vs Sunburst) */}
+          <div className="mb-5 p-3.5 rounded-2xl bg-white/[0.03] border border-white/[0.08]">
+            <div className="flex items-center justify-between mb-2.5">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-blue-400" /> Photo Enhancement Engine
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setModelTier('flare')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  modelTier === 'flare'
+                    ? 'bg-blue-500/20 border-blue-500/60 text-white shadow-sm ring-1 ring-blue-500/30'
+                    : 'bg-white/[0.02] border-white/[0.06] text-white/70 hover:border-white/[0.12]'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    ⚡ GPT Image 2.5 Flare <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-300 font-semibold">Default</span>
+                  </span>
+                  {modelTier === 'flare' && <Check className="w-4 h-4 text-blue-400 stroke-[3]" />}
+                </div>
+                <p className="text-[11px] text-white/60 leading-tight">
+                  High-speed (~15s) clean daylight balance, crisp lines, best for standard listings.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setModelTier('sunburst')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  modelTier === 'sunburst'
+                    ? 'bg-amber-500/20 border-amber-500/60 text-white shadow-sm ring-1 ring-amber-500/30'
+                    : 'bg-white/[0.02] border-white/[0.06] text-white/70 hover:border-white/[0.12]'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    ☀️ GPT Image 2.5 Sunburst <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-amber-500/30 text-amber-300 font-semibold">Luxury Master</span>
+                  </span>
+                  {modelTier === 'sunburst' && <Check className="w-4 h-4 text-amber-400 stroke-[3]" />}
+                </div>
+                <p className="text-[11px] text-white/60 leading-tight">
+                  Sotheby's luxury ambient warmth, deep dynamic range, best for penthouses & master suites.
+                </p>
+              </button>
+            </div>
+          </div>
+
+          {/* Presets Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+            {PRESETS.map((preset) => {
+              const isSelected = selectedPresets.includes(preset.id);
+              const IconComp = preset.icon;
+              return (
+                <button
+                  type="button"
+                  key={preset.id}
+                  onClick={() => togglePreset(preset.id)}
+                  className={`text-left p-3.5 rounded-xl border transition-all flex items-center justify-between ${
+                    isSelected
+                      ? 'bg-blue-500/15 border-white/[0.08] text-white shadow-sm'
+                      : 'glass-pill text-white/80 hover:border-white/[0.15]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 truncate">
+                    <IconComp className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-blue-400' : 'text-white/60'}`} />
+                    <span className={`text-xs font-semibold truncate ${isSelected ? 'text-blue-300' : 'text-slate-200'}`}>
+                      {preset.label}
+                    </span>
+                  </div>
+                  {isSelected && (
+                    <Check className="w-4 h-4 text-blue-400 flex-shrink-0 ml-1 stroke-[3]" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* COMPILED AI INSTRUCTIONS (EDITABLE & COLLAPSIBLE FOR MOBILE) */}
+          <div className="border border-white/[0.08] rounded-2xl p-4 bg-white/[0.02]">
+            <button
+              type="button"
+              id="toggle-prompt-accordion"
+              name="toggle_prompt_accordion"
+              onClick={() => setIsPromptExpanded(!isPromptExpanded)}
+              className="w-full flex items-center justify-between text-left cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-blue-400" />
+                <span className="text-[11px] font-bold uppercase tracking-wider text-blue-400">
+                  Active QA & Enhancement Prompt Directives
+                </span>
+              </div>
+              <span className="text-xs font-semibold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 px-2.5 py-1 rounded-lg border border-blue-500/20 transition-colors">
+                {isPromptExpanded ? '▲ Collapse Prompt' : '▼ Customize Prompt Directives'}
+              </span>
+            </button>
+
+            {isPromptExpanded && (
+              <div className="mt-3 animate-fade-in">
+                <textarea
+                  id="compiled-prompt-textarea"
+                  name="compiled_prompt"
+                  rows={7}
+                  value={compiledPrompt}
+                  onChange={(e) => setCompiledPrompt(e.target.value)}
+                  placeholder="QA & enhancement prompt instructions..."
+                  className="w-full glass-input rounded-xl p-3.5 text-bone-100 text-xs font-sans tabular-nums placeholder-slate-500 focus:outline-none transition-all leading-relaxed"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Submit Button & Progress Indicator */}
+        <div className="space-y-4">
+          {isSubmitting && (
+            <div className="glass-card p-4 border border-blue-500/30 bg-blue-500/10 rounded-2xl animate-fade-in">
+              <div className="flex items-center justify-between text-xs font-semibold text-white mb-2">
+                <span className="flex items-center gap-2">
+                  <RefreshCw className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+                  {uploadProgress.text || 'Processing listing & photos...'}
+                </span>
+                <span className="font-sans tabular-nums text-blue-300">
+                  {uploadProgress.total > 0 ? Math.round((uploadProgress.current / uploadProgress.total) * 100) : 100}%
+                </span>
+              </div>
+              <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-gradient-to-r from-blue-500 to-emerald-400 transition-all duration-300 rounded-full"
+                  style={{ width: `${uploadProgress.total > 0 ? Math.round((uploadProgress.current / uploadProgress.total) * 100) : 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={isSubmitting || !name.trim()}
+              className={`px-8 py-4 rounded-2xl font-bold text-white text-base flex items-center gap-3 transition-all shadow-xl cursor-pointer ${
+                isSubmitting || !name.trim()
+                  ? 'bg-navy-800 text-white/40 cursor-not-allowed border border-white/[0.08]'
+                  : selectedFiles.length === 0
+                  ? 'bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 shadow-amber-950/40 hover:scale-[1.02] active:scale-[0.98]'
+                  : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/30 hover:scale-[1.01]'
+              }`}
+            >
+              <Sparkles className="w-5 h-5" />
+              {isSubmitting
+                ? 'Processing Listing Package...'
+                : selectedFiles.length === 0
+                ? 'Save Listing as Draft (Photos Pending)'
+                : `Run QA & Enhance ${selectedFiles.length} Photos`}
+            </button>
+          </div>
+        </div>
+      </form>
+
+      {/* Clean popup toast */}
+      <Toast
+        message={toast.msg}
+        type={toast.type}
+        onClose={() => setToast({ msg: '', type: 'success' })}
+      />
+    </div>
+  );
+}

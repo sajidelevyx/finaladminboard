@@ -1,0 +1,14 @@
+node_modules/
+.env
+dist/
+build/
+secrets.php
+root_files/api/secrets.php
+*.secrets.php
+__pycache__/
+*.pyc
+check_hostinger.py
+direct_upload.py
+put_index.py
+run_deploy.py
+server/

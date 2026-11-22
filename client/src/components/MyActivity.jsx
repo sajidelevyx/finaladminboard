@@ -1,0 +1,1308 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  LayoutDashboard, List, Search, Phone, MessageSquare, 
+  ChevronDown, RefreshCw, ExternalLink, Play, Pause, Volume2, 
+  Building2, MapPin, User, Hash, CheckCircle2, AlertCircle, Clock, 
+  ArrowRight, X, UserCheck, ShieldCheck, Flame, Filter,
+  Link2, Copy, Check, Send, Radio, Terminal, Sparkles
+} from 'lucide-react';
+import { activityService, STAGE_CONFIG } from '../utils/activityService';
+
+export default function MyActivity({ currentUser }) {
+  const [view, setView] = useState('board');
+  const [agents, setAgents] = useState([]);
+  const [selectedAgentId, setSelectedAgentId] = useState('144'); // Default: Vikram
+  const [isAgentDropdownOpen, setIsAgentDropdownOpen] = useState(false);
+  const [agentSearch, setAgentSearch] = useState('');
+
+  const [items, setItems] = useState([]);
+  const [totalItems, setTotalItems] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeStageFilter, setActiveStageFilter] = useState('all');
+  const [sortBy, setSortBy] = useState('oldest'); // 'oldest' (FIFO Priority: earlier = higher priority) or 'newest'
+
+  // Webhook Modal State
+  const [isWebhookModalOpen, setIsWebhookModalOpen] = useState(false);
+  const [webhookList, setWebhookList] = useState([]);
+  const [loadingWebhooks, setLoadingWebhooks] = useState(false);
+  const [copiedWebhookId, setCopiedWebhookId] = useState(null);
+  const [pingingAgentId, setPingingAgentId] = useState(null);
+  const [pingResult, setPingResult] = useState({});
+  const [webhookSearch, setWebhookSearch] = useState('');
+
+  const loadWebhooks = async () => {
+    setLoadingWebhooks(true);
+    try {
+      const res = await activityService.listWebhooks();
+      if (res?.agents) {
+        setWebhookList(res.agents);
+      }
+    } catch (e) {
+      console.error('Failed to load webhook list:', e);
+    } finally {
+      setLoadingWebhooks(false);
+    }
+  };
+
+  const handleCopyWebhook = (url, id) => {
+    navigator.clipboard.writeText(url);
+    setCopiedWebhookId(id);
+    setTimeout(() => setCopiedWebhookId(null), 2000);
+  };
+
+  const handlePingWebhook = async (agentId) => {
+    setPingingAgentId(agentId);
+    try {
+      const res = await activityService.pingWebhook(agentId);
+      setPingResult(prev => ({ ...prev, [agentId]: res }));
+    } catch (err) {
+      setPingResult(prev => ({ ...prev, [agentId]: { success: false, message: err.message } }));
+    } finally {
+      setPingingAgentId(null);
+    }
+  };
+
+  // Modal / Detail Drawer
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [timeline, setTimeline] = useState([]);
+  const [loadingTimeline, setLoadingTimeline] = useState(false);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+
+  // Initial load of agents
+  useEffect(() => {
+    const initAgents = async () => {
+      const list = await activityService.getAgents();
+      setAgents(list);
+
+      // Match current logged-in user email or name to an agent
+      if (currentUser?.email) {
+        const lowerEmail = currentUser.email.toLowerCase();
+        const matched = list.find(a => (a.email || '').toLowerCase() === lowerEmail);
+        if (matched) {
+          setSelectedAgentId(matched.id);
+          return;
+        }
+      }
+
+      // Default to Vikram if present, otherwise first agent
+      const hasVikram = list.find(a => a.id === '144');
+      if (hasVikram) {
+        setSelectedAgentId('144');
+      } else if (list.length > 0) {
+        setSelectedAgentId(list[0].id);
+      }
+    };
+    initAgents();
+  }, [currentUser]);
+
+  // Fetch activity cards whenever selectedAgentId or sortBy changes
+  const loadActivity = async (isManualRefresh = false) => {
+    if (isManualRefresh) setRefreshing(true);
+    else setLoading(true);
+
+    try {
+      const data = await activityService.getActivity(selectedAgentId, {
+        limit: 100,
+        sortBy
+      });
+      setItems(data.items || []);
+      setTotalItems(data.total || (data.items || []).length);
+    } catch (err) {
+      console.error('Failed to load activity:', err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    loadActivity();
+  }, [selectedAgentId, sortBy]);
+
+  // Open item detail modal & load audio / transcript timeline
+  const handleOpenDetail = async (item) => {
+    setSelectedItem(item);
+    setAudioPlaying(false);
+    setLoadingTimeline(true);
+    try {
+      const tl = await activityService.getItemTimeline(item.id);
+      setTimeline(tl);
+    } catch (err) {
+      console.error('Failed to load timeline:', err);
+      setTimeline([]);
+    } finally {
+      setLoadingTimeline(false);
+    }
+  };
+
+  // Stage change handler
+  const handleStageChange = async (itemId, newStageId) => {
+    const res = await activityService.updateStage(itemId, newStageId, selectedAgentId);
+    if (res.success) {
+      // Optimistic update
+      setItems(prev => prev.map(it => {
+        if (it.id === itemId) {
+          const meta = STAGE_CONFIG[newStageId] || { name: 'Updated', key: 'other', color: '#385175' };
+          return {
+            ...it,
+            stage_id: newStageId,
+            stage_name: meta.name,
+            stage_key: meta.key,
+            stage_color: meta.color
+          };
+        }
+        return it;
+      }));
+      if (selectedItem?.id === itemId) {
+        const meta = STAGE_CONFIG[newStageId] || { name: 'Updated', key: 'other', color: '#385175' };
+        setSelectedItem(prev => ({
+          ...prev,
+          stage_id: newStageId,
+          stage_name: meta.name,
+          stage_key: meta.key,
+          stage_color: meta.color
+        }));
+      }
+    }
+  };
+
+  // Filtered items based on search query
+  const filteredItems = useMemo(() => {
+    let list = items;
+    if (activeStageFilter !== 'all') {
+      list = list.filter(it => it.stage_key === activeStageFilter);
+    }
+    if (!searchQuery.trim()) return list;
+
+    const q = searchQuery.toLowerCase().trim();
+    return list.filter(it => 
+      (it.title || '').toLowerCase().includes(q) ||
+      (it.project_name || '').toLowerCase().includes(q) ||
+      (it.location || '').toLowerCase().includes(q) ||
+      (it.owner_name || '').toLowerCase().includes(q) ||
+      (it.unit_number || '').toLowerCase().includes(q) ||
+      (it.contact_number || '').includes(q)
+    );
+  }, [items, searchQuery, activeStageFilter]);
+
+  // Columns definition for Kanban
+  const kanbanColumns = [
+    { key: 'ready', title: 'Ready for Call', border: 'border-sky-500/30', bg: 'bg-sky-500/10', text: 'text-sky-400', stageId: 'DT1100_44:ASQ_READY_CALL' },
+    { key: 'contacted', title: 'Contacted / In Progress', border: 'border-cyan-500/30', bg: 'bg-cyan-500/10', text: 'text-cyan-400', stageId: 'DT1100_44:UC_5B620Q' },
+    { key: 'has_property', title: 'Has Property', border: 'border-blue-500/30', bg: 'bg-blue-500/10', text: 'text-blue-400', stageId: 'DT1100_44:UC_HGMTGR' },
+    { key: 'interested', title: 'Interested to Sell/Rent', border: 'border-emerald-500/40 shadow-emerald-500/10', bg: 'bg-emerald-500/15', text: 'text-emerald-400', highlight: true, stageId: 'DT1100_44:UC_4IMVM8' },
+    { key: 'success', title: 'Won / Deal Converted', border: 'border-teal-500/30', bg: 'bg-teal-500/10', text: 'text-teal-400', stageId: 'DT1100_44:SUCCESS' },
+    { key: 'failed', title: 'Archived / Lost', border: 'border-rose-500/30', bg: 'bg-rose-500/10', text: 'text-rose-400', stageId: 'DT1100_44:FAIL' }
+  ];
+
+  // Group items by kanban column
+  const columnData = useMemo(() => {
+    const grouped = {};
+    kanbanColumns.forEach(c => { grouped[c.key] = []; });
+    
+    filteredItems.forEach(item => {
+      let k = item.stage_key;
+      if (k === 'no_answer') k = 'contacted';
+      if (k === 'not_interested') k = 'failed';
+      if (k === 'import') k = 'ready';
+      if (!grouped[k]) k = 'ready';
+      grouped[k].push(item);
+    });
+    return grouped;
+  }, [filteredItems]);
+
+  // Selected agent object
+  const currentAgent = agents.find(a => a.id === selectedAgentId) || {
+    id: selectedAgentId,
+    name: selectedAgentId === 'all' ? 'All Telesales Fleet' : `Agent #${selectedAgentId}`,
+    email: '',
+    photo: null
+  };
+
+  const filteredAgentsList = useMemo(() => {
+    if (!agentSearch.trim()) return agents;
+    const q = agentSearch.toLowerCase().trim();
+    return agents.filter(a => 
+      (a.name || '').toLowerCase().includes(q) || 
+      (a.email || '').toLowerCase().includes(q)
+    );
+  }, [agents, agentSearch]);
+
+  const filteredWebhookList = useMemo(() => {
+    if (!webhookSearch.trim()) return webhookList;
+    const q = webhookSearch.toLowerCase().trim();
+    return webhookList.filter(a => 
+      (a.name || '').toLowerCase().includes(q) || 
+      (a.email || '').toLowerCase().includes(q) ||
+      (a.id || '').includes(q)
+    );
+  }, [webhookList, webhookSearch]);
+
+  const interestedCount = items.filter(it => it.stage_key === 'interested').length;
+  const contactedCount = items.filter(it => it.stage_key === 'contacted' || it.stage_key === 'no_answer').length;
+  const readyCount = items.filter(it => it.stage_key === 'ready' || it.stage_key === 'import').length;
+  const wonCount = items.filter(it => it.stage_key === 'success').length;
+
+  return (
+    <div className="w-full flex flex-col h-full animate-fade-in text-white/90 selection:bg-blue-500/30">
+      {/* Top Header Bar */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5 pb-4 border-b border-white/[0.08]">
+        <div>
+          <div className="flex items-center gap-3">
+            <h1 className="ds-page-title">
+              My Activity &amp; Pipeline
+            </h1>
+          </div>
+        </div>
+
+        {/* Right Controls: Agent Selector, Refresh & View Mode */}
+        <div className="flex items-center flex-wrap gap-2.5">
+          {/* Agent Selector Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setIsAgentDropdownOpen(prev => !prev)}
+              className="flex items-center gap-2.5 bg-[#09182b] hover:bg-[#0f243d] border border-[#233b59] px-3.5 py-2 rounded-xl text-xs font-semibold text-white shadow-lg transition-all"
+            >
+              <div className="w-6 h-6 rounded-full overflow-hidden bg-blue-600/30 border border-blue-400/30 flex items-center justify-center shrink-0">
+                {currentAgent.photo ? (
+                  <img src={currentAgent.photo} alt={currentAgent.name} className="w-full h-full object-cover" />
+                ) : (
+                  <User className="w-3.5 h-3.5 text-blue-300" />
+                )}
+              </div>
+              <div className="flex flex-col text-left leading-tight">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Responsible</span>
+                <span className="text-xs font-bold text-white">{currentAgent.name}</span>
+              </div>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-1" />
+            </button>
+
+            {/* Agent Select Menu */}
+            {isAgentDropdownOpen && (
+              <div className="absolute right-0 mt-2 w-72 bg-[#061324] border border-[#233b59] rounded-2xl shadow-2xl z-50 p-2 animate-fade-in backdrop-blur-xl">
+                <div className="p-1.5 border-b border-white/[0.08]">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Search active agent..."
+                      value={agentSearch}
+                      autoFocus
+                      onChange={e => setAgentSearch(e.target.value)}
+                      className="w-full bg-[#030a13] border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="max-h-56 overflow-y-auto custom-scrollbar py-1 space-y-0.5">
+                  <button
+                    onClick={() => { setSelectedAgentId('all'); setIsAgentDropdownOpen(false); }}
+                    className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-xs text-left transition-all ${
+                      selectedAgentId === 'all' ? 'bg-blue-600 text-white font-bold' : 'text-slate-300 hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <div className="w-6 h-6 rounded-full bg-blue-500/20 border border-blue-400/30 flex items-center justify-center shrink-0">
+                      <Flame className="w-3 h-3 text-blue-400" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-xs leading-tight">All Leads / Fleet Pool</div>
+                      <div className="text-[10px] text-slate-400 truncate">Cards across all agents</div>
+                    </div>
+                  </button>
+
+                  {filteredAgentsList.map(a => (
+                    <button
+                      key={a.id}
+                      onClick={() => { setSelectedAgentId(a.id); setIsAgentDropdownOpen(false); }}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-xs text-left transition-all ${
+                        selectedAgentId === a.id ? 'bg-blue-600 text-white font-bold' : 'text-slate-300 hover:bg-white/[0.05]'
+                      }`}
+                    >
+                      <div className="w-6 h-6 rounded-full overflow-hidden bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
+                        {a.photo ? (
+                          <img src={a.photo} alt={a.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <User className="w-3 h-3 text-slate-300" />
+                        )}
+                      </div>
+                      <div className="truncate min-w-0">
+                        <div className="font-semibold truncate leading-tight text-xs">{a.name}</div>
+                        <div className="text-[10px] text-slate-400 truncate">{a.email || `ID: ${a.id}`}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Priority Sort Button (Earlier/Older leads = Higher Priority) */}
+          <button
+            onClick={() => setSortBy(prev => prev === 'oldest' ? 'newest' : 'oldest')}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all shadow-sm cursor-pointer ${
+              sortBy === 'oldest'
+                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
+                : 'bg-[#09182b] text-slate-300 border-[#233b59] hover:bg-[#0f243d] hover:text-white'
+            }`}
+            title="Every interested lead is important: earlier (older) leads have higher priority"
+          >
+            <Clock className={`w-3.5 h-3.5 ${sortBy === 'oldest' ? 'text-amber-400' : 'text-slate-400'}`} />
+            <span>{sortBy === 'oldest' ? 'FIFO Priority (Oldest First)' : 'Newest First'}</span>
+          </button>
+
+          {/* Refresh Button */}
+          <button
+            onClick={() => loadActivity(true)}
+            disabled={refreshing}
+            className="p-2.5 bg-[#09182b] hover:bg-[#0f243d] border border-[#233b59] rounded-xl text-slate-300 hover:text-white transition-all shadow-md cursor-pointer"
+            title="Refresh Bitrix24 cards"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-blue-400' : ''}`} />
+          </button>
+
+          {/* Dedicated Lead Integration Links */}
+          <button
+            onClick={() => {
+              setIsWebhookModalOpen(true);
+              loadWebhooks();
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 transition-all shadow-sm cursor-pointer"
+            title="Connect lead integration links to automations and CRM"
+          >
+            <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            <span>Lead Integration Links</span>
+          </button>
+
+          {/* Board / List Switcher */}
+          <div className="ds-filter-bar">
+            <button
+              onClick={() => setView('board')}
+              className={`ds-filter-pill ${view === 'board' ? 'ds-filter-pill-active' : ''} flex items-center gap-1.5`}
+            >
+              <LayoutDashboard className="w-3.5 h-3.5" />
+              <span>Board</span>
+            </button>
+            <button
+              onClick={() => setView('list')}
+              className={`ds-filter-pill ${view === 'list' ? 'ds-filter-pill-active' : ''} flex items-center gap-1.5`}
+            >
+              <List className="w-3.5 h-3.5" />
+              <span>List</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Metric Quick Stats Pills */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
+        <div className="ds-subcard p-3 flex items-center justify-between">
+          <div>
+            <div className="ds-kicker">Total Assigned</div>
+            <div className="text-xl font-bold font-sans tabular-nums text-white mt-0.5">{totalItems}</div>
+          </div>
+          <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+            <Hash className="w-4 h-4" />
+          </div>
+        </div>
+
+        <div className="ds-subcard p-3 flex items-center justify-between">
+          <div>
+            <div className="ds-kicker text-sky-400">Ready for Call</div>
+            <div className="text-xl font-bold font-sans tabular-nums text-white mt-0.5">{readyCount}</div>
+          </div>
+          <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
+            <Phone className="w-4 h-4" />
+          </div>
+        </div>
+
+        <div className="ds-subcard border-emerald-500/30 p-3 flex items-center justify-between shadow-lg shadow-emerald-500/5">
+          <div>
+            <div className="ds-kicker text-emerald-400 flex items-center gap-1">
+              <span>Interested</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            </div>
+            <div className="text-xl font-bold font-sans tabular-nums text-white mt-0.5">{interestedCount}</div>
+          </div>
+          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-300">
+            <Flame className="w-4 h-4" />
+          </div>
+        </div>
+
+        <div className="ds-subcard border-rose-500/30 p-3 flex items-center justify-between shadow-lg shadow-rose-500/5">
+          <div>
+            <div className="ds-kicker text-rose-400 flex items-center gap-1">
+              <span>Overdue (&gt;48h)</span>
+              {items.filter(it => it.priority_level === 'critical').length > 0 && (
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+              )}
+            </div>
+            <div className="text-xl font-bold font-sans tabular-nums text-white mt-0.5">
+              {items.filter(it => it.priority_level === 'critical').length}
+            </div>
+          </div>
+          <div className="w-8 h-8 rounded-lg bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-300">
+            <AlertCircle className="w-4 h-4" />
+          </div>
+        </div>
+
+        <div className="ds-subcard p-3 flex items-center justify-between">
+          <div>
+            <div className="ds-kicker text-teal-400">Won / Success</div>
+            <div className="text-xl font-bold font-sans tabular-nums text-white mt-0.5">{wonCount}</div>
+          </div>
+          <div className="w-8 h-8 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400">
+            <CheckCircle2 className="w-4 h-4" />
+          </div>
+        </div>
+      </div>
+
+      {/* Filter / Search Bar */}
+      <div className="flex items-center gap-3 mb-4">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            placeholder="Search by owner name, project, unit, or phone number..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="ds-input pl-9 pr-8"
+          />
+          {searchQuery && (
+            <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Stage Filter Pills */}
+        <div className="hidden sm:flex items-center gap-1.5 overflow-x-auto custom-scrollbar py-0.5">
+          <button
+            onClick={() => setActiveStageFilter('all')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              activeStageFilter === 'all' 
+                ? 'bg-blue-600 text-white shadow-sm' 
+                : 'bg-[#081729] text-slate-400 hover:text-white border border-white/5'
+            }`}
+          >
+            All Stages ({items.length})
+          </button>
+          <button
+            onClick={() => setActiveStageFilter('interested')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+              activeStageFilter === 'interested' 
+                ? 'bg-emerald-600 text-white shadow-sm' 
+                : 'bg-[#081729] text-emerald-400 hover:text-white border border-emerald-500/20'
+            }`}
+          >
+            <span>Interested ({interestedCount})</span>
+          </button>
+          <button
+            onClick={() => setActiveStageFilter('contacted')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              activeStageFilter === 'contacted' 
+                ? 'bg-cyan-600 text-white shadow-sm' 
+                : 'bg-[#081729] text-cyan-400 hover:text-white border border-cyan-500/20'
+            }`}
+          >
+            Contacted ({contactedCount})
+          </button>
+          <button
+            onClick={() => setActiveStageFilter('ready')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              activeStageFilter === 'ready' 
+                ? 'bg-sky-600 text-white shadow-sm' 
+                : 'bg-[#081729] text-sky-400 hover:text-white border border-sky-500/20'
+            }`}
+          >
+            Ready ({readyCount})
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Area: Board or List */}
+      <div className="flex-1 min-h-0 relative">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center h-full p-12 text-center">
+            <RefreshCw className="w-8 h-8 text-blue-400 animate-spin mb-3" />
+            <div className="text-sm font-semibold text-white">Connecting to Bitrix24 SPA (Entity #1100)...</div>
+            <div className="text-xs text-slate-400 mt-1">Retrieving cards assigned to {currentAgent.name}</div>
+          </div>
+        ) : filteredItems.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full p-12 text-center bg-[#071322]/50 border border-white/5 rounded-2xl">
+            <AlertCircle className="w-10 h-10 text-slate-500 mb-2" />
+            <div className="text-sm font-semibold text-white">No activity cards found</div>
+            <div className="text-xs text-slate-400 max-w-sm mt-1">
+              {searchQuery ? `No cards match "${searchQuery}". Try clearing the search.` : `There are currently no Telesales cards assigned to ${currentAgent.name}.`}
+            </div>
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="mt-3 px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-500 transition-all cursor-pointer"
+              >
+                Clear Search
+              </button>
+            )}
+          </div>
+        ) : view === 'board' ? (
+          /* Kanban Board View */
+          <div className="h-full overflow-x-auto custom-scrollbar pb-2">
+            <div className="flex gap-4 min-w-max h-full">
+              {kanbanColumns.map(col => {
+                const colItems = columnData[col.key] || [];
+                return (
+                  <div
+                    key={col.key}
+                    className="w-[310px] flex flex-col h-full bg-[#081628] border border-[#1e3450] rounded-2xl shadow-xl overflow-hidden"
+                  >
+                    {/* Column Header */}
+                    <div className="p-3.5 border-b border-[#1e3450] flex items-center justify-between bg-[#05101d]">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2.5 h-2.5 rounded-full ${col.highlight ? 'bg-emerald-400 animate-pulse' : 'bg-blue-400'}`} />
+                        <h3 className="font-bold text-xs text-white uppercase tracking-wider">{col.title}</h3>
+                      </div>
+                      <span className={`text-[11px] font-sans tabular-nums px-2 py-0.5 rounded-full font-bold ${col.bg} ${col.text} border ${col.border}`}>
+                        {colItems.length}
+                      </span>
+                    </div>
+
+                    {/* Column Items Container */}
+                    <div className="p-3 flex-1 overflow-y-auto custom-scrollbar space-y-3">
+                      {colItems.map(item => (
+                        <div
+                          key={item.id}
+                          onClick={() => handleOpenDetail(item)}
+                          className={`bg-[#050f1c] border rounded-2xl p-3.5 cursor-pointer transition-all shadow-md hover:shadow-xl hover:-translate-y-0.5 relative group ${
+                            col.highlight 
+                              ? 'border-emerald-500/50 hover:border-emerald-400 bg-gradient-to-br from-[#051a14]/60 to-[#050f1c]' 
+                              : 'border-[#1b2f48] hover:border-[#385987]'
+                          }`}
+                        >
+                          {/* Green left accent border matching Image 1 */}
+                          {col.highlight && (
+                            <div className="absolute left-0 top-3 bottom-3 w-1.5 bg-emerald-400 rounded-r-full shadow-lg shadow-emerald-400/50" />
+                          )}
+
+                          {/* Priority Ranking & SLA Waiting Badge (Earlier = Higher Priority) */}
+                          <div className="flex items-center justify-between mb-2 pl-1.5 pr-1">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-sans tabular-nums font-bold tracking-tight inline-flex items-center gap-1.5 ${
+                              item.priority_level === 'critical'
+                                ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm shadow-rose-500/20'
+                                : item.priority_level === 'high'
+                                ? 'bg-orange-500/20 text-orange-300 border border-orange-500/40'
+                                : item.priority_level === 'medium'
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                            }`}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                              <span>Priority #{item.priority_rank || 1}</span>
+                              <span className="text-white/30">•</span>
+                              <span>{item.waiting_human || 'Recent'}</span>
+                            </span>
+
+                            {item.priority_level === 'critical' && (
+                              <span className="text-[9px] font-bold text-rose-400 uppercase tracking-wider font-sans tabular-nums">
+                                Overdue
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Card Header matching Image 1 */}
+                          <div className="flex items-start justify-between mb-2.5 pl-1.5">
+                            <div>
+                              <div className="text-[12px] font-bold text-white tracking-tight leading-snug">
+                                Telesales - Owners data
+                              </div>
+                              <div className="text-[11px] font-sans tabular-nums font-semibold text-blue-400">
+                                #{item.id}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-slate-400">
+                              {item.contact_number && (
+                                <a
+                                  href={`tel:${item.contact_number}`}
+                                  onClick={e => e.stopPropagation()}
+                                  className="p-1 hover:text-emerald-400 transition-colors"
+                                  title="Direct Call"
+                                >
+                                  <Phone className="w-3.5 h-3.5" />
+                                </a>
+                              )}
+                              {item.whatsapp_link && (
+                                <a
+                                  href={item.whatsapp_link}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  className="p-1 hover:text-emerald-400 transition-colors"
+                                  title="WhatsApp Chat"
+                                >
+                                  <MessageSquare className="w-3.5 h-3.5" />
+                                </a>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Responsible Person row */}
+                          <div className="mb-2.5 pl-1.5 flex flex-col">
+                            <span className="text-[10px] text-slate-400 font-medium">Responsible person</span>
+                            <div className="flex items-center gap-2 mt-1">
+                              <div className="w-5 h-5 rounded-full overflow-hidden bg-blue-500/20 border border-blue-400/30 flex items-center justify-center shrink-0">
+                                {currentAgent.photo ? (
+                                  <img src={currentAgent.photo} alt={currentAgent.name} className="w-full h-full object-cover" />
+                                ) : (
+                                  <User className="w-3 h-3 text-blue-300" />
+                                )}
+                              </div>
+                              <span className="text-xs font-bold text-blue-400 truncate">{currentAgent.name}</span>
+                            </div>
+                          </div>
+
+                          {/* Project Name */}
+                          <div className="mb-1.5 pl-1.5">
+                            <span className="text-[10px] text-slate-400 block font-medium">Project Name</span>
+                            <span className="text-xs font-bold text-white block truncate leading-tight">
+                              {item.project_name}
+                            </span>
+                          </div>
+
+                          {/* Location */}
+                          <div className="mb-1.5 pl-1.5">
+                            <span className="text-[10px] text-slate-400 block font-medium">Location</span>
+                            <span className="text-xs text-slate-300 block truncate leading-tight">
+                              {item.location}
+                            </span>
+                          </div>
+
+                          {/* Owner Name */}
+                          <div className="mb-1.5 pl-1.5">
+                            <span className="text-[10px] text-slate-400 block font-medium">Owner Name</span>
+                            <span className="text-xs font-semibold text-slate-200 block truncate uppercase leading-tight">
+                              {item.owner_name}
+                            </span>
+                          </div>
+
+                          {/* Unit Number & Contact */}
+                          <div className="grid grid-cols-2 gap-2 mb-2 pl-1.5 pt-1 border-t border-white/[0.05]">
+                            <div>
+                              <span className="text-[10px] text-slate-400 block font-medium">Unit Number</span>
+                              <span className="text-xs font-sans tabular-nums font-semibold text-white block">
+                                {item.unit_number || 'TBD'}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-slate-400 block font-medium">Contact Number</span>
+                              <span className="text-xs font-sans tabular-nums text-slate-300 block truncate">
+                                {item.contact_number || 'N/A'}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* WhatsApp Link */}
+                          {item.whatsapp_link && (
+                            <div className="pl-1.5 mb-2">
+                              <span className="text-[10px] text-slate-400 block font-medium">Whatsapp Link</span>
+                              <a
+                                href={item.whatsapp_link}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={e => e.stopPropagation()}
+                                className="text-[11px] text-blue-400 hover:text-blue-300 truncate block underline font-sans tabular-nums"
+                              >
+                                {item.whatsapp_link}
+                              </a>
+                            </div>
+                          )}
+
+                          {/* Bottom Row: Date & Action */}
+                          <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between text-[11px] text-slate-400 pl-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <Clock className="w-3 h-3 text-slate-500" />
+                              <span>{item.updated_time ? new Date(item.updated_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Recent'}</span>
+                            </div>
+                            <span className="text-[10px] font-semibold text-blue-400 group-hover:underline flex items-center gap-1">
+                              <span>Notes &amp; Audio</span>
+                              <ArrowRight className="w-3 h-3" />
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+
+                      {colItems.length === 0 && (
+                        <div className="text-center py-10 text-slate-500 text-xs italic">
+                          No cards in {col.title}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          /* List / Table View */
+          <div className="h-full ds-card overflow-hidden flex flex-col">
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="ds-table-header sticky top-0 z-10">
+                  <tr>
+                    <th className="ds-table-header-cell">Priority</th>
+                    <th className="ds-table-header-cell">Card ID</th>
+                    <th className="ds-table-header-cell">Project &amp; Location</th>
+                    <th className="ds-table-header-cell">Owner Name</th>
+                    <th className="ds-table-header-cell">Unit</th>
+                    <th className="ds-table-header-cell">Contact &amp; WhatsApp</th>
+                    <th className="ds-table-header-cell">Stage</th>
+                    <th className="ds-table-header-cell">Aging / Date</th>
+                    <th className="ds-table-header-cell text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/[0.05]">
+                  {filteredItems.map(item => (
+                    <tr
+                      key={item.id}
+                      onClick={() => handleOpenDetail(item)}
+                      className="ds-table-row cursor-pointer group"
+                    >
+                      <td className="ds-table-cell">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-sans tabular-nums font-bold tracking-tight inline-flex items-center gap-1.5 ${
+                          item.priority_level === 'critical'
+                            ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                            : item.priority_level === 'high'
+                            ? 'bg-orange-500/20 text-orange-300 border border-orange-500/40'
+                            : item.priority_level === 'medium'
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                            : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        }`}>
+                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          <span>#{item.priority_rank}</span>
+                          <span className="text-white/30">•</span>
+                          <span>{item.waiting_human}</span>
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 font-sans tabular-nums font-bold text-blue-400">
+                        #{item.id}
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="font-semibold text-white">{item.project_name}</div>
+                        <div className="text-[11px] text-slate-400">{item.location}</div>
+                      </td>
+                      <td className="py-3 px-4 font-semibold text-slate-200 uppercase">
+                        {item.owner_name}
+                      </td>
+                      <td className="py-3 px-4 font-sans tabular-nums text-white">
+                        {item.unit_number || '—'}
+                      </td>
+                      <td className="py-3 px-4 font-sans tabular-nums">
+                        <div className="text-slate-300">{item.contact_number || '—'}</div>
+                        {item.whatsapp_link && (
+                          <a
+                            href={item.whatsapp_link}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={e => e.stopPropagation()}
+                            className="text-[10px] text-blue-400 hover:underline flex items-center gap-1"
+                          >
+                            <MessageSquare className="w-2.5 h-2.5" /> WhatsApp
+                          </a>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span
+                          className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-block"
+                          style={{
+                            backgroundColor: `${item.stage_color}20`,
+                            color: item.stage_color,
+                            border: `1px solid ${item.stage_color}40`
+                          }}
+                        >
+                          {item.stage_name}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-slate-400 text-[11px]">
+                        {item.updated_time ? new Date(item.updated_time).toLocaleDateString() : '—'}
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        <button
+                          onClick={e => { e.stopPropagation(); handleOpenDetail(item); }}
+                          className="px-2.5 py-1 bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-500/30 rounded-lg text-[11px] font-semibold transition-all cursor-pointer"
+                        >
+                          View Details
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Item Detail & Voice Audio Modal */}
+      {selectedItem && (
+        <div className="ds-modal-overlay">
+          <div className="ds-modal max-w-2xl max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-white/10 bg-white/[0.03] flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                  <Building2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base leading-tight">
+                    {selectedItem.project_name} <span className="font-sans tabular-nums text-blue-400 text-sm">#{selectedItem.id}</span>
+                  </h3>
+                  <p className="text-slate-400 text-xs">
+                    {selectedItem.location} • Unit {selectedItem.unit_number || 'N/A'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSelectedItem(null)}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto custom-scrollbar space-y-4 flex-1">
+              {/* Owner & Contact Card */}
+              <div className="bg-[#050f1c] border border-white/10 rounded-xl p-4 grid grid-cols-2 gap-4 text-xs">
+                <div>
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">Owner Name</span>
+                  <span className="font-bold text-white text-sm mt-0.5 block">{selectedItem.owner_name}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">Responsible Agent</span>
+                  <span className="font-bold text-blue-400 text-sm mt-0.5 block">{currentAgent.name}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">Contact Phone</span>
+                  <a href={`tel:${selectedItem.contact_number}`} className="font-sans tabular-nums font-bold text-white hover:text-emerald-400 mt-0.5 block">
+                    {selectedItem.contact_number || 'Unlisted'}
+                  </a>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">WhatsApp Direct</span>
+                  {selectedItem.whatsapp_link ? (
+                    <a
+                      href={selectedItem.whatsapp_link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-sans tabular-nums text-blue-400 hover:text-blue-300 underline mt-0.5 block truncate"
+                    >
+                      Open Chat
+                    </a>
+                  ) : (
+                    <span className="text-slate-500 mt-0.5 block">N/A</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Stage Transition Selector */}
+              <div className="bg-[#050f1c] border border-white/10 rounded-xl p-4">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block mb-2">
+                  Update Pipeline Stage in Bitrix24
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {kanbanColumns.map(c => {
+                    const isActive = selectedItem.stage_id === c.stageId || selectedItem.stage_key === c.key;
+                    return (
+                      <button
+                        key={c.key}
+                        onClick={() => handleStageChange(selectedItem.id, c.stageId)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                          isActive 
+                            ? 'bg-blue-600 text-white shadow-md' 
+                            : 'bg-[#081729] text-slate-300 hover:bg-[#0f243d] border border-white/10'
+                        }`}
+                      >
+                        {c.title}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Voice Call AI Recordings & Sentiment Timeline */}
+              <div className="bg-[#050f1c] border border-white/10 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Volume2 className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      Voice Call Intelligence &amp; Audio Recordings
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-sans tabular-nums text-slate-400">
+                    {timeline.length} call log(s)
+                  </span>
+                </div>
+
+                {loadingTimeline ? (
+                  <div className="text-center py-6 text-slate-400 text-xs">
+                    <RefreshCw className="w-4 h-4 animate-spin inline-block mr-2" />
+                    Loading call recordings from Supabase &amp; Bitrix timeline...
+                  </div>
+                ) : timeline.length === 0 ? (
+                  <div className="text-center py-6 text-slate-500 text-xs italic">
+                    No automated voice call recordings logged on this card yet.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {timeline.map((entry, idx) => (
+                      <div key={idx} className="bg-[#030912] border border-white/10 rounded-xl p-3.5 space-y-2.5">
+                        {/* Audio Player if URL exists */}
+                        {entry.recording_url && (
+                          <div className="bg-emerald-950/20 border border-emerald-500/30 rounded-lg p-2.5 flex flex-col gap-2">
+                            <div className="flex items-center justify-between text-xs text-emerald-400 font-semibold">
+                              <span className="flex items-center gap-1.5">
+                                <Volume2 className="w-3.5 h-3.5" /> Stereo Audio Recording
+                              </span>
+                              <a
+                                href={entry.recording_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[10px] text-emerald-300 underline font-sans tabular-nums flex items-center gap-1"
+                              >
+                                Download .wav <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            </div>
+                            <audio controls className="w-full h-8" src={entry.recording_url}>
+                              Your browser does not support the audio element.
+                            </audio>
+                          </div>
+                        )}
+
+                        {/* Call Note / Sentiment */}
+                        {entry.call_note && (
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">AI Sentiment Note</span>
+                            <p className="text-xs text-slate-200 mt-0.5 font-medium leading-relaxed bg-white/[0.03] p-2 rounded-lg border border-white/5">
+                              {entry.call_note}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Voice Status */}
+                        {entry.voice_status && (
+                          <div className="flex items-center justify-between text-[11px] pt-1 border-t border-white/5">
+                            <span className="text-slate-400">Call Status:</span>
+                            <span className="font-semibold text-sky-400">{entry.voice_status}</span>
+                          </div>
+                        )}
+
+                        {/* Transcript Link */}
+                        {entry.transcript_url && (
+                          <div className="pt-1">
+                            <a
+                              href={entry.transcript_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-blue-400 hover:text-blue-300 underline font-sans tabular-nums flex items-center gap-1"
+                            >
+                              <span>View Full Call Transcript</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
+                        )}
+
+                        {/* Timestamp */}
+                        <div className="text-[10px] text-slate-500 text-right pt-1 font-sans tabular-nums">
+                          {entry.created ? new Date(entry.created).toLocaleString() : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-[#233b59] bg-[#05101d] flex items-center justify-between">
+              <a
+                href={selectedItem.crm_link}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-blue-400 hover:text-blue-300 underline font-semibold flex items-center gap-1.5"
+              >
+                <span>Open in Bitrix24 CRM</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+
+              <button
+                onClick={() => setSelectedItem(null)}
+                className="px-4 py-2 bg-[#1b2b3d] hover:bg-[#283e58] text-white text-xs font-semibold rounded-xl transition-all cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* AGENT WEBHOOK GATEWAY MODAL                                         */}
+      {/* =================================================================== */}
+      {isWebhookModalOpen && (
+        <div className="ds-modal-overlay">
+          <div className="ds-modal max-w-4xl max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 border-b border-white/10 flex items-center justify-between bg-white/[0.03]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                  <Radio className="w-5 h-5 animate-pulse" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                      Lead Integration Links
+                    </h2>
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsWebhookModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-5 custom-scrollbar bg-[#040c17]">
+              {/* Universal Webhook Endpoint Box */}
+              <div className="bg-[#071526] border border-[#1b314d] rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">Universal Inbound Lead Link</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-sans tabular-nums">Active Inbound Link</span>
+                </div>
+                <p className="text-xs text-slate-400 mb-3 leading-relaxed">
+                  Automatically routes new leads to any advisor using their Advisor ID.
+                </p>
+                <div className="flex items-center gap-2 bg-[#02070f] border border-white/10 rounded-lg p-2 font-sans tabular-nums text-xs text-emerald-300 overflow-x-auto">
+                  <span className="truncate select-all flex-1">https://dashboard.asquared.ae/dashboard/api_agent_webhook.php</span>
+                  <button
+                    onClick={() => handleCopyWebhook('https://dashboard.asquared.ae/dashboard/api_agent_webhook.php', 'universal')}
+                    className="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded text-[11px] font-sans font-semibold flex items-center gap-1 shrink-0 transition-all cursor-pointer"
+                  >
+                    {copiedWebhookId === 'universal' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedWebhookId === 'universal' ? 'Copied' : 'Copy URL'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Selected Agent Dedicated Webhook Card */}
+              {selectedAgentId !== 'all' && (
+                <div className="bg-gradient-to-r from-blue-950/30 via-[#071a33] to-blue-950/20 border border-blue-500/30 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-full overflow-hidden bg-blue-600/30 border border-blue-400/30 flex items-center justify-center shrink-0">
+                        {currentAgent.photo ? (
+                          <img src={currentAgent.photo} alt={currentAgent.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <User className="w-4 h-4 text-blue-300" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-white flex items-center gap-2">
+                          <span>{currentAgent.name}</span>
+                          <span className="text-[10px] font-sans tabular-nums text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">
+                            Agent #{currentAgent.id}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-400">{currentAgent.email || 'Active Telesales Agent'}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 bg-[#02070f] border border-blue-500/20 rounded-lg p-2 font-sans tabular-nums text-xs text-sky-300 overflow-x-auto mb-3">
+                    <span className="truncate select-all flex-1">
+                      {`https://dashboard.asquared.ae/api_agent_webhook.php?agent_id=${selectedAgentId}`}
+                    </span>
+                    <button
+                      onClick={() => handleCopyWebhook(`https://dashboard.asquared.ae/api_agent_webhook.php?agent_id=${selectedAgentId}`, `agent_${selectedAgentId}`)}
+                      className="px-2.5 py-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded text-[11px] font-sans font-semibold flex items-center gap-1 shrink-0 transition-all cursor-pointer"
+                    >
+                      {copiedWebhookId === `agent_${selectedAgentId}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedWebhookId === `agent_${selectedAgentId}` ? 'Copied' : 'Copy'}</span>
+                    </button>
+                    <button
+                      onClick={() => handlePingWebhook(selectedAgentId)}
+                      disabled={pingingAgentId === selectedAgentId}
+                      className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-sans font-semibold flex items-center gap-1 shrink-0 transition-all cursor-pointer shadow"
+                    >
+                      {pingingAgentId === selectedAgentId ? (
+                        <RefreshCw className="w-3 h-3 animate-spin text-white" />
+                      ) : (
+                        <Send className="w-3 h-3" />
+                      )}
+                      <span>{pingingAgentId === selectedAgentId ? 'Pinging...' : 'Send Test Ping'}</span>
+                    </button>
+                  </div>
+
+                  {/* Ping Result Display */}
+                  {pingResult[selectedAgentId] && (
+                    <div className="bg-[#020813] border border-emerald-500/30 rounded-lg p-3 text-xs text-slate-300 animate-fade-in">
+                      <div className="flex items-center gap-2 text-emerald-400 font-semibold mb-1">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Status 200 OK — Gateway Online & Verified!</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 font-sans tabular-nums">
+                        {pingResult[selectedAgentId].message || 'Ping logged to Supabase asq_crm_events_v1 audit table.'}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-1 font-sans tabular-nums">
+                        Received At: {pingResult[selectedAgentId].received_at || new Date().toISOString()}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Search & Roster Directory of All 30 Agents */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <UserCheck className="w-4 h-4 text-blue-400" />
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      Advisor Lead Links Directory ({webhookList.length || agents.length})
+                    </span>
+                  </div>
+                  <div className="relative w-64">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Filter by agent name or ID..."
+                      value={webhookSearch}
+                      onChange={e => setWebhookSearch(e.target.value)}
+                      className="w-full bg-[#02070f] border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+
+                {loadingWebhooks ? (
+                  <div className="text-center py-8 text-slate-400 text-xs">
+                    <RefreshCw className="w-4 h-4 animate-spin inline-block mr-2 text-blue-400" />
+                    Loading advisor integration links...
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-72 overflow-y-auto custom-scrollbar p-1">
+                    {(filteredWebhookList.length > 0 ? filteredWebhookList : agents).map(agt => {
+                      const id = String(agt.id);
+                      const url = `https://dashboard.asquared.ae/api_agent_webhook.php?agent_id=${id}`;
+                      const isPinged = pingResult[id];
+
+                      return (
+                        <div key={id} className="bg-[#071322] border border-[#1b2b3d] hover:border-blue-500/30 rounded-xl p-3 flex flex-col justify-between gap-2 transition-all">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="w-7 h-7 rounded-full overflow-hidden bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
+                                {agt.photo ? (
+                                  <img src={agt.photo} alt={agt.name} className="w-full h-full object-cover" />
+                                ) : (
+                                  <User className="w-3.5 h-3.5 text-slate-300" />
+                                )}
+                              </div>
+                              <div className="truncate">
+                                <div className="text-xs font-bold text-white truncate">{agt.name}</div>
+                                <div className="text-[10px] text-slate-400 truncate">{agt.email || `ID: ${id}`}</div>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-sans tabular-nums px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-semibold shrink-0">
+                              #{id}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 bg-[#02070f] border border-white/5 rounded-lg px-2 py-1 text-[11px] font-sans tabular-nums text-slate-300">
+                            <span className="truncate flex-1 text-slate-400">...api_agent_webhook.php?agent_id={id}</span>
+                            <button
+                              onClick={() => handleCopyWebhook(url, `list_${id}`)}
+                              className="p-1 hover:bg-white/10 rounded text-slate-300 hover:text-white transition-all cursor-pointer"
+                              title="Copy lead link"
+                            >
+                              {copiedWebhookId === `list_${id}` ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => handlePingWebhook(id)}
+                              disabled={pingingAgentId === id}
+                              className="px-2 py-0.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-[10px] font-sans font-semibold transition-all cursor-pointer"
+                              title="Send test ping"
+                            >
+                              {pingingAgentId === id ? (
+                                <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                              ) : (
+                                'Ping'
+                              )}
+                            </button>
+                          </div>
+
+                          {isPinged && (
+                            <div className="text-[10px] text-emerald-400 flex items-center gap-1 font-sans tabular-nums">
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Verified Online ({new Date(isPinged.received_at || Date.now()).toLocaleTimeString()})</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Bitrix24 & n8n Integration Guide Code Box */}
+              <div className="bg-[#071526] border border-[#1b314d] rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Terminal className="w-4 h-4 text-sky-400" />
+                  <span className="text-xs font-bold text-white uppercase tracking-wider">Bitrix24 Robot &amp; n8n Setup Guide</span>
+                </div>
+                <div className="text-xs text-slate-300 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <span className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">1</span>
+                    <p>
+                      <strong>In Bitrix24:</strong> Navigate to CRM &gt; Telesales - Owners data (SPA 1100) &gt; Automation rules. Add a <em>Web Hook</em> action triggered on stage changes or owner call completion.
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">2</span>
+                    <p>
+                      <strong>Handler URL:</strong> Set handler to <code className="text-emerald-300 font-sans tabular-nums">https://dashboard.asquared.ae/api_agent_webhook.php?agent_id={`{{Responsible}}`}</code>
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">3</span>
+                    <p>
+                      <strong>Accepted Fields:</strong> Accepts lead updates with <code className="text-amber-300 font-sans tabular-nums">item_id</code>, <code className="text-amber-300 font-sans tabular-nums">stage_id</code>, <code className="text-amber-300 font-sans tabular-nums">call_note</code>, <code className="text-amber-300 font-sans tabular-nums">audio_url</code>, and <code className="text-amber-300 font-sans tabular-nums">transcript_url</code>. All updates are logged and immediately visible on the advisor's board.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-[#1b2b3d] bg-[#06111e] flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>Audit Logging Active</span>
+              </div>
+              <button
+                onClick={() => setIsWebhookModalOpen(false)}
+                className="ds-btn-secondary"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
