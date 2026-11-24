@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ExternalLink, LogOut } from 'lucide-react';
 import { featureAccessService, FEATURE_ACCESS_EVENT } from '../utils/featureAccessService';
+import { ROUTE_MAP } from '../App';
 
 export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout }) {
   const isListingActive = activeTab === 'listing' || activeTab === 'dashboard' || activeTab === 'new' || activeTab === 'detail' || activeTab.startsWith('detail');
@@ -23,6 +24,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
   const showOperations = featureAccessService.isSectionVisible(userRole, 'operations');
   const showAdmin = featureAccessService.isSectionVisible(userRole, 'admin');
 
+  // Multi-tab aware navigation handler (Ctrl/Cmd/middle click opens native tab)
+  const handleNavClick = (e, tab) => {
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && e.button === 0) {
+      e.preventDefault();
+      setActiveTab(tab);
+    }
+  };
+
   return (
     <aside 
       className="w-[240px] shrink-0 backdrop-blur-2xl border border-white/15 rounded-2xl p-2.5 flex flex-col h-full shadow-2xl select-none overflow-hidden transition-all hidden md:flex relative z-10"
@@ -32,10 +41,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
       }}
     >
       {/* Brand Header */}
-      <div 
-        onClick={() => {
-          const target = can('overview') ? 'overview' : featureAccessService.getFirstAccessibleTab(userRole);
-          setActiveTab(target);
+      <a 
+        href={ROUTE_MAP?.overview || '/overview'}
+        onClick={(e) => {
+          if (!e.ctrlKey && !e.metaKey && !e.shiftKey && e.button === 0) {
+            e.preventDefault();
+            const target = can('overview') ? 'overview' : featureAccessService.getFirstAccessibleTab(userRole);
+            setActiveTab(target);
+          }
         }}
         className="brand-logo flex flex-col items-center justify-center py-2.5 px-2 cursor-pointer select-none group border-b border-white/10 shrink-0"
       >
@@ -44,7 +57,7 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
           alt="A SQUARED REAL ESTATE" 
           className="w-[160px] max-w-full h-auto object-contain transition-transform group-hover:scale-[1.02] drop-shadow-md"
         />
-      </div>
+      </a>
 
       {/* Navigation Links grouped into 3 logical sections: PORTFOLIO, OPERATIONS, ADMIN */}
       <nav className="w-full flex-1 flex flex-col py-1 min-h-0 overflow-y-auto custom-scrollbar space-y-2.5">
@@ -58,8 +71,9 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
 
             {/* 1. Overview */}
             {can('overview') && (
-              <button 
-                onClick={() => setActiveTab('overview')} 
+              <a 
+                href={ROUTE_MAP?.overview || '/overview'}
+                onClick={(e) => handleNavClick(e, 'overview')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'overview' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -67,13 +81,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Overview</span>
-              </button>
+              </a>
             )}
 
             {/* 2. Owners Data */}
             {can('owners') && (
-              <button 
-                onClick={() => setActiveTab('owners')} 
+              <a 
+                href={ROUTE_MAP?.owners || '/owners'}
+                onClick={(e) => handleNavClick(e, 'owners')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'owners' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -81,13 +96,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Owners Data</span>
-              </button>
+              </a>
             )}
 
             {/* 3. Buildings & Communities */}
             {can('buildings') && (
-              <button 
-                onClick={() => setActiveTab('buildings')} 
+              <a 
+                href={ROUTE_MAP?.buildings || '/buildings'}
+                onClick={(e) => handleNavClick(e, 'buildings')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'buildings' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -95,13 +111,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Buildings</span>
-              </button>
+              </a>
             )}
 
             {/* 4. Search Engine */}
             {can('search') && (
-              <button 
-                onClick={() => setActiveTab('search')} 
+              <a 
+                href={ROUTE_MAP?.search || '/search'}
+                onClick={(e) => handleNavClick(e, 'search')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'search' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -109,7 +126,7 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Search Engine</span>
-              </button>
+              </a>
             )}
 
             {/* 5. Transactions (External link to DLD Transaction Dashboard) */}
@@ -136,8 +153,9 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
 
             {/* 6. Workflows */}
             {can('workflows') && (
-              <button 
-                onClick={() => setActiveTab('workflows')} 
+              <a 
+                href={ROUTE_MAP?.workflows || '/workflows'}
+                onClick={(e) => handleNavClick(e, 'workflows')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'workflows' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -145,13 +163,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Workflows</span>
-              </button>
+              </a>
             )}
 
             {/* 7. Data Cleaning */}
             {can('leads') && (
-              <button 
-                onClick={() => setActiveTab('leads')} 
+              <a 
+                href={ROUTE_MAP?.leads || '/leads'}
+                onClick={(e) => handleNavClick(e, 'leads')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   isLeadsActive 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -159,13 +178,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Data Cleaning</span>
-              </button>
+              </a>
             )}
 
             {/* 8. Listing Studio */}
             {can('listing') && (
-              <button 
-                onClick={() => setActiveTab('listing')} 
+              <a 
+                href={ROUTE_MAP?.listing || '/listing'}
+                onClick={(e) => handleNavClick(e, 'listing')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   isListingActive 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -173,13 +193,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Listing Studio</span>
-              </button>
+              </a>
             )}
 
             {/* 9. Voice Agent Centre */}
             {can('voice') && (
-              <button 
-                onClick={() => setActiveTab('voice')} 
+              <a 
+                href={ROUTE_MAP?.voice || '/voiceagent'}
+                onClick={(e) => handleNavClick(e, 'voice')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'voice' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -187,13 +208,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Voice Agent Centre</span>
-              </button>
+              </a>
             )}
 
             {/* 10. AI Agent */}
             {can('agent') && (
-              <button 
-                onClick={() => setActiveTab('agent')} 
+              <a 
+                href={ROUTE_MAP?.agent || '/agent'}
+                onClick={(e) => handleNavClick(e, 'agent')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'agent' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -201,13 +223,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>AI Agent</span>
-              </button>
+              </a>
             )}
 
             {/* 11. My Activity */}
             {can('activity') && (
-              <button 
-                onClick={() => setActiveTab('activity')} 
+              <a 
+                href={ROUTE_MAP?.activity || '/myactivity'}
+                onClick={(e) => handleNavClick(e, 'activity')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'activity' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -215,7 +238,7 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>My Activity</span>
-              </button>
+              </a>
             )}
           </div>
         )}
@@ -229,8 +252,9 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
 
             {/* 12. Roles */}
             {can('roles') && (
-              <button 
-                onClick={() => setActiveTab('roles')} 
+              <a 
+                href={ROUTE_MAP?.roles || '/roles'}
+                onClick={(e) => handleNavClick(e, 'roles')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'roles' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -238,13 +262,14 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Roles</span>
-              </button>
+              </a>
             )}
 
             {/* 13. Account & Settings */}
             {can('settings') && (
-              <button 
-                onClick={() => setActiveTab('settings')} 
+              <a 
+                href={ROUTE_MAP?.settings || '/settings'}
+                onClick={(e) => handleNavClick(e, 'settings')} 
                 className={`w-full flex items-center px-3 py-1.5 rounded-xl text-[13px] font-medium tracking-wide transition-all text-left ${
                   activeTab === 'settings' 
                     ? 'bg-[#183153]/85 text-[#e2e0cc] border border-[#b7a990]/40 shadow-lg backdrop-blur-md' 
@@ -252,7 +277,7 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
                 }`}
               >
                 <span>Account &amp; Settings</span>
-              </button>
+              </a>
             )}
           </div>
         )}

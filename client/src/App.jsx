@@ -23,6 +23,7 @@ const VoiceAgent = lazy(() => import('./components/VoiceAgent'));
 const AIAgent = lazy(() => import('./components/AIAgent'));
 const AccountSettings = lazy(() => import('./components/AccountSettings'));
 const RolesManagement = lazy(() => import('./components/RolesManagement'));
+import DeepLinkShareButton from './components/DeepLinkShareButton';
 
 function TabLoadingSkeleton() {
   return (
@@ -36,54 +37,79 @@ function TabLoadingSkeleton() {
   );
 }
 
-const ROUTE_MAP = {
-  overview: '/dashboard/overview',
-  owners: '/dashboard/owners',
-  activity: '/dashboard/myactivity',
-  search: '/dashboard/search',
-  team: '/dashboard/team',
-  leads: '/dashboard/datacleaning',
-  listing: '/dashboard/listing',
-  voice: '/dashboard/voiceagent',
-  agent: '/dashboard/agent',
-  buildings: '/dashboard/buildings',
-  sources: '/dashboard/datalibrary',
-  roles: '/dashboard/roles',
-  settings: '/dashboard/settings',
-  workflows: '/dashboard/workflows',
-  new: '/dashboard/new-listing',
-  detail: '/dashboard/listing-detail'
+export const ROUTE_MAP = {
+  overview: '/overview',
+  owners: '/owners',
+  activity: '/myactivity',
+  search: '/search',
+  team: '/team',
+  leads: '/leads',
+  listing: '/listing',
+  voice: '/voiceagent',
+  agent: '/agent',
+  buildings: '/buildings',
+  sources: '/datalibrary',
+  roles: '/roles',
+  settings: '/settings',
+  workflows: '/workflows',
+  new: '/new-listing',
+  detail: '/listing-detail'
 };
 
-function getRouteInfo() {
-  if (typeof window === 'undefined') return { tab: 'overview', id: null };
-  const path = window.location.pathname.toLowerCase().replace(/\/+$/, '');
-  const hash = window.location.hash || '';
-  const [hashPath, hashQuery] = hash.replace(/^#\/?/, '').split('?');
-  const searchParams = new URLSearchParams(hashQuery || window.location.search || '');
-  const listingId = searchParams.get('id') || searchParams.get('listing_id');
-
-  const target = (hashPath || path.split('/').pop() || '').toLowerCase();
-  
-  if (target === 'myactivity' || target === 'activity') return { tab: 'activity', id: listingId };
-  if (target === 'datalibrary' || target === 'sources') return { tab: 'leads', id: listingId, autoOpenLibrary: true };
-  if (target === 'datacleaning' || target === 'leads') return { tab: 'leads', id: listingId };
-  if (target === 'voiceagent' || target === 'voice') return { tab: 'voice', id: listingId };
-  if (target === 'agent' || target === 'ai-agent') return { tab: 'agent', id: listingId };
-  if (target === 'owners') return { tab: 'owners', id: listingId };
-  if (target === 'buildings') return { tab: 'buildings', id: listingId };
-  if (target === 'search') return { tab: 'search', id: listingId };
-  if (target === 'team') return { tab: 'team', id: listingId };
-  if (target === 'listing') return { tab: 'listing', id: listingId };
-  if (target === 'roles' || target === 'role') return { tab: 'roles', id: listingId };
-  if (target === 'settings') return { tab: 'settings', id: listingId };
-  if (target === 'workflows' || target === 'workflow') return { tab: 'workflows', id: listingId };
-  if (target === 'new-listing' || target === 'new') return { tab: 'new', id: listingId };
-  if (target === 'listing-detail' || target === 'detail') return { tab: 'detail', id: listingId };
-  return { tab: 'overview', id: listingId };
+export function getTabPath(tab, listingId = null, queryParams = null) {
+  const base = ROUTE_MAP[tab] || `/${tab}`;
+  const params = new URLSearchParams(queryParams || {});
+  if (listingId && !params.has('id')) {
+    params.set('id', listingId);
+  }
+  const qs = params.toString();
+  return qs ? `${base}?${qs}` : base;
 }
 
-function getTabFromUrl() {
+export function getRouteInfo() {
+  if (typeof window === 'undefined') return { tab: 'overview', id: null, query: {} };
+  
+  // Clean path: strip trailing slash and optional legacy /dashboard prefix
+  let path = window.location.pathname.toLowerCase().replace(/\/+$/, '');
+  path = path.replace(/^\/public\/dashboard/, '').replace(/^\/dashboard/, '');
+  
+  const hash = window.location.hash || '';
+  const [hashPath, hashQuery] = hash.replace(/^#\/?/, '').split('?');
+  
+  const searchParams = new URLSearchParams(window.location.search || '');
+  if (hashQuery) {
+    const hp = new URLSearchParams(hashQuery);
+    for (const [k, v] of hp.entries()) {
+      if (!searchParams.has(k)) searchParams.set(k, v);
+    }
+  }
+
+  const listingId = searchParams.get('id') || searchParams.get('listing_id');
+  const queryObj = Object.fromEntries(searchParams.entries());
+
+  const pathSegment = path.replace(/^\/+/, '').split('/')[0] || '';
+  const hashSegment = (hashPath || '').replace(/^\/+/, '').split('/')[0] || '';
+  const target = (pathSegment || hashSegment || 'overview').toLowerCase();
+  
+  if (target === 'myactivity' || target === 'activity') return { tab: 'activity', id: listingId, query: queryObj };
+  if (target === 'datalibrary' || target === 'sources') return { tab: 'leads', id: listingId, autoOpenLibrary: true, query: queryObj };
+  if (target === 'datacleaning' || target === 'leads') return { tab: 'leads', id: listingId, query: queryObj };
+  if (target === 'voiceagent' || target === 'voice') return { tab: 'voice', id: listingId, query: queryObj };
+  if (target === 'agent' || target === 'ai-agent') return { tab: 'agent', id: listingId, query: queryObj };
+  if (target === 'owners') return { tab: 'owners', id: listingId, query: queryObj };
+  if (target === 'buildings') return { tab: 'buildings', id: listingId, query: queryObj };
+  if (target === 'search') return { tab: 'search', id: listingId, query: queryObj };
+  if (target === 'team') return { tab: 'team', id: listingId, query: queryObj };
+  if (target === 'listing') return { tab: 'listing', id: listingId, query: queryObj };
+  if (target === 'roles' || target === 'role') return { tab: 'roles', id: listingId, query: queryObj };
+  if (target === 'settings') return { tab: 'settings', id: listingId, query: queryObj };
+  if (target === 'workflows' || target === 'workflow') return { tab: 'workflows', id: listingId, query: queryObj };
+  if (target === 'new-listing' || target === 'new') return { tab: 'new', id: listingId, query: queryObj };
+  if (target === 'listing-detail' || target === 'detail') return { tab: 'detail', id: listingId, query: queryObj };
+  return { tab: 'overview', id: listingId, query: queryObj };
+}
+
+export function getTabFromUrl() {
   return getRouteInfo().tab;
 }
 
@@ -184,16 +210,29 @@ export default function App() {
     };
   }, [currentUser]);
 
-  const setActiveTab = (newTab, pushState = true) => {
-    setActiveTabState(newTab);
+  const setActiveTab = (tabOrPath, pushState = true) => {
+    let tab = tabOrPath;
+    let queryParams = {};
+    if (typeof tabOrPath === 'string' && tabOrPath.includes('?')) {
+      const [t, qs] = tabOrPath.split('?');
+      tab = t;
+      const sp = new URLSearchParams(qs);
+      for (const [k, v] of sp.entries()) {
+        queryParams[k] = v;
+      }
+      if (queryParams.id) {
+        setSelectedListingId(queryParams.id);
+        try {
+          localStorage.setItem('asquared_selected_listing_id', queryParams.id);
+        } catch (e) {}
+      }
+    }
+    setActiveTabState(tab);
     if (pushState && typeof window !== 'undefined') {
-      const isDashboardBase = window.location.pathname.startsWith('/public/dashboard')
-        ? '/public/dashboard/'
-        : window.location.pathname.startsWith('/dashboard')
-        ? '/dashboard/'
-        : '/';
-      const finalUrl = `${isDashboardBase}#${newTab}`;
-      window.history.pushState({ tab: newTab }, '', finalUrl);
+      const targetPath = getTabPath(tab, queryParams.id || (tab === 'detail' ? selectedListingId : null), queryParams);
+      if (window.location.pathname + window.location.search !== targetPath) {
+        window.history.pushState({ tab }, '', targetPath);
+      }
     }
   };
 
@@ -216,26 +255,16 @@ export default function App() {
     };
   }, []);
 
-  // Normalize legacy pathname route (e.g. /dashboard/overview) to resilient hash URL to prevent 404 on refresh
+  // URL Normalizer: Seamlessly upgrades legacy hash routes (/#leads) or redundant (/dashboard/...) to clean paths
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const currentRoute = getRouteInfo();
-    const currentTab = currentRoute.tab;
-    const isPathRoute = window.location.pathname.includes('/overview') ||
-                        window.location.pathname.includes('/workflows') ||
-                        window.location.pathname.includes('/owners') ||
-                        window.location.pathname.includes('/buildings') ||
-                        window.location.pathname.includes('/myactivity') ||
-                        window.location.pathname.includes('/search') ||
-                        window.location.pathname.includes('/voiceagent') ||
-                        window.location.pathname.includes('/roles') ||
-                        window.location.pathname.includes('/settings');
-    if (isPathRoute) {
-      const basePath = window.location.pathname.startsWith('/public/dashboard')
-        ? '/public/dashboard/'
-        : '/dashboard/';
-      const hashSuffix = currentRoute.id ? `${currentTab}?id=${currentRoute.id}` : currentTab;
-      window.history.replaceState({ tab: currentTab }, '', `${basePath}#${hashSuffix}`);
+    const hasHash = !!window.location.hash;
+    const hasRedundantPrefix = window.location.pathname.startsWith('/dashboard') || window.location.pathname.startsWith('/public/dashboard');
+    const targetPath = getTabPath(currentRoute.tab, currentRoute.id, currentRoute.query);
+    
+    if (hasHash || hasRedundantPrefix || (window.location.pathname === '/' && currentRoute.tab !== 'overview')) {
+      window.history.replaceState({ tab: currentRoute.tab }, '', targetPath);
     }
   }, []);
 
@@ -247,12 +276,7 @@ export default function App() {
       const allowedTab = featureAccessService.getFirstAccessibleTab(userRole);
       setActiveTab(allowedTab, false);
       if (typeof window !== 'undefined') {
-        const isDashboardBase = window.location.pathname.startsWith('/public/dashboard')
-          ? '/public/dashboard/'
-          : window.location.pathname.startsWith('/dashboard')
-          ? '/dashboard/'
-          : '/';
-        window.history.replaceState({ tab: allowedTab }, '', `${isDashboardBase}#${allowedTab}`);
+        window.history.replaceState({ tab: allowedTab }, '', getTabPath(allowedTab));
       }
     }
   }, [activeTab, currentUser]);
@@ -266,12 +290,7 @@ export default function App() {
         const allowedTab = featureAccessService.getFirstAccessibleTab(userRole);
         setActiveTab(allowedTab, false);
         if (typeof window !== 'undefined') {
-          const isDashboardBase = window.location.pathname.startsWith('/public/dashboard')
-            ? '/public/dashboard/'
-            : window.location.pathname.startsWith('/dashboard')
-            ? '/dashboard/'
-            : '/';
-          window.history.replaceState({ tab: allowedTab }, '', `${isDashboardBase}#${allowedTab}`);
+          window.history.replaceState({ tab: allowedTab }, '', getTabPath(allowedTab));
         }
       }
     };
@@ -367,6 +386,18 @@ export default function App() {
 
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden relative z-10">
+          {/* Top Architectural Navigation & Deep-Link Bar */}
+          <div className="flex items-center justify-between pb-1.5 px-1 shrink-0 select-none">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold tracking-widest text-[#b7a990]/90 uppercase font-sans">
+                {ROUTE_MAP[activeTab] || `/${activeTab}`}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <DeepLinkShareButton />
+            </div>
+          </div>
+
           {/* Main Architectural Container: Frosted Glass Pavilion */}
           <main 
             className={`flex-1 rounded-2xl p-4 lg:p-6 relative flex flex-col min-h-0 backdrop-blur-2xl border border-white/15 shadow-2xl ${

@@ -15,15 +15,26 @@ DirectoryIndex index.php index.html
 </IfModule>
 
 <IfModule mod_headers.c>
+  # Disable caching for index.html so users always receive latest bundle
   <FilesMatch "\.(html)$">
     Header set Cache-Control "no-cache, no-store, must-revalidate"
     Header set Pragma "no-cache"
     Header set Expires 0
   </FilesMatch>
+
+  # Cache static hashed assets (JS, CSS, images) for 1 year
+  <FilesMatch "\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$">
+    Header set Cache-Control "max-age=31536000, public, immutable"
+  </FilesMatch>
 </IfModule>
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
+
+  # Pass through existing files and directories
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
 
   # AI Engine Endpoints
   RewriteRule ^api/ai/enhance/?$ api_ai_enhancer.php [L,QSA]
@@ -54,7 +65,10 @@ DirectoryIndex index.php index.html
   RewriteRule ^api/push-to-bitrix/?$ api/push-to-bitrix.php [L,QSA]
   RewriteRule ^dashboard/api/push-to-bitrix/?$ api/push-to-bitrix.php [L,QSA]
 
-  # Redirect bare root to dashboard
-  RewriteRule ^$ /dashboard/ [R=301,L]
-  RewriteRule ^dashboard$ /dashboard/ [R=301,L]
+  # Clean Single Page Application (SPA) routing fallback
+  RewriteRule ^(overview|leads|datacleaning|listing|new|detail|owners|buildings|voice|voiceagent|agent|search|team|roles|settings|workflows)/?$ index.html [L,QSA]
+  RewriteRule ^ index.html [L]
 </IfModule>
+
+# Fallback 404 handler
+ErrorDocument 404 index.html
