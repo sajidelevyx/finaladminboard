@@ -23,7 +23,6 @@ const VoiceAgent = lazy(() => import('./components/VoiceAgent'));
 const AIAgent = lazy(() => import('./components/AIAgent'));
 const AccountSettings = lazy(() => import('./components/AccountSettings'));
 const RolesManagement = lazy(() => import('./components/RolesManagement'));
-import DeepLinkShareButton from './components/DeepLinkShareButton';
 
 function TabLoadingSkeleton() {
   return (
@@ -386,18 +385,6 @@ export default function App() {
 
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden relative z-10">
-          {/* Top Architectural Navigation & Deep-Link Bar */}
-          <div className="flex items-center justify-between pb-1.5 px-1 shrink-0 select-none">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold tracking-widest text-[#b7a990]/90 uppercase font-sans">
-                {ROUTE_MAP[activeTab] || `/${activeTab}`}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <DeepLinkShareButton />
-            </div>
-          </div>
-
           {/* Main Architectural Container: Frosted Glass Pavilion */}
           <main 
             className={`flex-1 rounded-2xl p-4 lg:p-6 relative flex flex-col min-h-0 backdrop-blur-2xl border border-white/15 shadow-2xl ${
